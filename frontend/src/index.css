@@ -1,0 +1,129 @@
+/*
+ * The shell's styles.
+ *
+ * Implements: AC8, NFR-18 (usable at common desktop and tablet widths).
+ *
+ * Plain CSS, on purpose. The spine defers the choice of styling approach and component
+ * library, and this story must not make it — a choice made here to render one shell
+ * would bind 26 later stories to whatever seemed convenient on day three.
+ *
+ * WCAG conformance is a declared non-goal for this project. Legible contrast and a
+ * sensible tab order are not, and cost nothing.
+ */
+
+:root {
+  --surface: #ffffff;
+  --ink: #14161a;
+  --ink-muted: #5c6470;
+  --line: #e3e6ea;
+  --up: #0f7b4f;
+  --down: #b3261e;
+  --waiting: #7a5b00;
+
+  color-scheme: light;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+  color: var(--ink);
+  background: #f6f7f9;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.shell {
+  /* Bounded so lines do not run the full width of a wide desktop display, and fluid so
+     a tablet in portrait is never forced to scroll horizontally. */
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  gap: 1.5rem;
+}
+
+.shell__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.shell__title {
+  margin: 0;
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+}
+
+.shell__main {
+  flex: 1;
+}
+
+.shell__footer {
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.875rem;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+}
+
+.panel h2 {
+  margin-top: 0;
+  font-size: 1.125rem;
+}
+
+.muted {
+  color: var(--ink-muted);
+}
+
+.badge {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  padding: 0.25rem 0.625rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.badge--up {
+  color: var(--up);
+}
+
+.badge--down {
+  color: var(--down);
+}
+
+.badge--waiting {
+  color: var(--waiting);
+}
+
+/* Tablet portrait and below. The header stacks rather than crowding the badge against
+   the title, which is the only place the desktop layout actually breaks down. */
+@media (max-width: 48rem) {
+  .shell {
+    padding: 1rem 0.75rem 2rem;
+  }
+
+  .shell__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .panel {
+    padding: 1.125rem;
+  }
+}

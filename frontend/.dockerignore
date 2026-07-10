@@ -1,0 +1,5 @@
+# node_modules is reinstalled from the lockfile inside the image; copying the host's
+# would ship darwin/arm64 binaries into a linux image.
+node_modules/
+dist/
+.env

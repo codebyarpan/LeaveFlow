@@ -1,0 +1,174 @@
+# generated: 2026-07-10
+# last_updated: 2026-07-10
+# project: LeaveFlow
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; sprint-status surfaces open ones
+
+# ============================================================================
+# PLANNING CONTEXT — LeaveFlow
+# ============================================================================
+# Implementation Readiness: ACCEPTED 2026-07-10 — READY, 0 blocking findings.
+# Report: _bmad-output/planning-artifacts/implementation-readiness-report-2026-07-10.md
+#
+# SCOPE IS APPROVED AND FIXED. 4 epics, 27 full-stack vertical-slice stories,
+# 191 acceptance criteria. No requirement is dropped and no frontend scope is
+# reduced on account of the criteria count. Sequencing and tracking carry the
+# delivery risk; they do not resolve it by deletion.
+#
+# ---------------------------------------------------------------------------
+# DELIVERY RISK (F-13, carried forward, unresolved by design)
+# ---------------------------------------------------------------------------
+# Budget: THREE DAYS of application code (Days 3-5 of a seven-day plan).
+# PRD §9 — Days 1, 2, 6 and 7 produce artifacts, not code.
+#
+#   Epic 1  ->  8 stories,  60 ACs   Phase 1  (correctness core)
+#   Epic 2  -> 12 stories,  90 ACs   Phase 1  (correctness core)
+#   Epic 3  ->  5 stories,  30 ACs   Phase 2  (product becomes usable)
+#   Epic 4  ->  2 stories,  11 ACs   Phase 3  (completes FR coverage)
+#
+# Phase 1 is 150 of 191 ACs — 79% of the plan. The only budget risk any
+# upstream artifact declares is Phase 3's 11 ACs. The exposure is in Phase 1.
+# This file exists partly to make that visible day by day rather than on Day 5.
+#
+# EPIC 4 IS THE DECLARED BUDGET CASUALTY (FR-13 upload, FR-15 CSV export).
+# PRD §7.3 is explicit: if Phase 3 does not land, SM-8 is MISSED and REPORTED
+# AS A MISSED TARGET — never reclassified after the fact as a deferral that was
+# always intended. Counter-metric SM-C1 governs a collision between coverage and
+# correctness: correctness wins, and the shortfall is DECLARED.
+#
+# ---------------------------------------------------------------------------
+# SEQUENCING NOTES
+# ---------------------------------------------------------------------------
+# - Epics are strictly ordered 1 -> 2 -> 3 -> 4. Epic 2 NO LONGER depends on
+#   Epic 3: Story 2.7 now delivers GET /leave-requests and
+#   GET /leave-requests/<id> (FR-03-scoped, status filter only). Story 3.1
+#   extends them with FR-12 composable filters and FR-20 cross-year history.
+# - Within Epic 1, 1.1 -> 1.2 -> 1.3 -> 1.4 is a hard chain: 1.4's
+#   authorization primitives must exist before 1.5 and 1.6 consume them, or
+#   each invents a role check that 1.7 would rewrite.
+# - Story 1.6 carries the G7 (AD-23, REPORTING_CYCLE) and G8 (AD-22 widened)
+#   guards. Both are deliberately upstream of Epic 2's approval path, which is
+#   where the invalid state would otherwise be exploited.
+# - Within Epic 2, 2.3 (day count) and 2.4 (balances) precede 2.6 (submit).
+#   2.11 and 2.12 both depend on 2.4 + 2.6 existing.
+# - Story 4.1 adds a document-required check to Story 2.6's submission service.
+#   Safe to arrive last: EL, CL and FL seed requires_supporting_document=false.
+#
+# ---------------------------------------------------------------------------
+# BINDING DECISIONS FROM THE READINESS PASS (2026-07-10)
+# ---------------------------------------------------------------------------
+# These were RESOLVED DURING THE READINESS REVIEW, not in the original
+# finalized artifacts. Provenance is recorded in epics.md, api-contracts.md
+# and erd.md, each dated 2026-07-10 and citing its gap ID.
+#
+#   G2 -> 409 EMAIL_ALREADY_IN_USE      duplicate email on create/update
+#   G3 -> 403 ACTION_NOT_PERMITTED      role-denied read; 404 stays reserved
+#                                       for scope misses; AD-10 UNCHANGED
+#   G5 -> 400 FORBIDDEN_FIELD           PATCH /me with a forbidden field
+#   G7 -> AD-23 (new) + 400 REPORTING_CYCLE   acyclic reporting graph
+#   G8 -> AD-22 widened                 refuse demotion below MANAGER while
+#                                       an active Employee names them Manager
+#
+# STILL OPEN, NON-BLOCKING — do not let these silently lapse:
+#   G4  An outstanding token for a since-deactivated Employee.
+#       Security-relevant. DECIDE BEFORE DEPLOYMENT (not before coding).
+#   G6  Success status code for DELETE /departments/<id>. Cosmetic.
+# ============================================================================
+
+generated: 2026-07-10
+last_updated: 2026-07-10
+project: LeaveFlow
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  # --- Epic 1: Secure Access and Organization Administration -----------------
+  # Phase 1 (correctness core) · 8 stories · 60 ACs
+  # FRs: FR-01, FR-02, FR-03, FR-04, FR-05, FR-17
+  epic-1: in-progress
+  1-1-project-foundation-and-reproducible-setup: done
+  1-2-log-in-and-receive-a-session: ready-for-dev
+  1-3-carry-the-session-on-every-request: backlog
+  1-4-authorization-primitives-the-role-gate-scoped-reads-and-the-404-convention: backlog
+  1-5-manage-departments: backlog
+  1-6-manage-employees-and-reporting-lines: backlog
+  1-7-scope-authority-to-the-reporting-relationship: backlog
+  1-8-edit-my-own-name: backlog
+  epic-1-retrospective: optional
+
+  # --- Epic 2: Trustworthy Leave Balances and the Request Lifecycle ----------
+  # Phase 1 (correctness core) · 12 stories · 90 ACs
+  # FRs: FR-06, FR-07, FR-08, FR-09, FR-10, FR-16
+  # Four of five correctness metrics land here: SM-1, SM-2, SM-4, SM-5.
+  epic-2: backlog
+  2-1-leave-types-as-configuration: backlog
+  2-2-the-company-holiday-calendar: backlog
+  2-3-the-leave-day-count-one-implementation-nowhere-else: backlog
+  2-4-leave-balances-three-quantities-one-derived: backlog
+  2-5-see-what-a-request-will-cost-before-committing-to-it: backlog
+  2-6-submit-a-leave-request: backlog
+  2-7-decide-a-request-approve-reject-cancel: backlog
+  2-8-cancel-approved-leave-through-a-cancellation-request: backlog
+  2-9-the-audit-trail: backlog
+  2-10-the-leave-year-rollover: backlog
+  2-11-a-holiday-change-recalculates-and-may-be-refused: backlog
+  2-12-change-leave-policy-with-an-explicit-disposition: backlog
+  epic-2-retrospective: optional
+
+  # --- Epic 3: Visibility and Decision Support ------------------------------
+  # Phase 2 (the product becomes usable) · 5 stories · 30 ACs
+  # FRs: FR-11, FR-12, FR-14, FR-18, FR-19, FR-20
+  epic-3: backlog
+  3-1-my-leave-history-filtered-and-bounded: backlog
+  3-2-my-team: backlog
+  3-3-the-department-leave-calendar-at-the-moment-of-decision: backlog
+  3-4-in-app-notifications: backlog
+  3-5-a-dashboard-per-role: backlog
+  epic-3-retrospective: optional
+
+  # --- Epic 4: Supporting Documents and Reporting ---------------------------
+  # Phase 3 (completes specification coverage) · 2 stories · 11 ACs
+  # FRs: FR-13, FR-15
+  # DECLARED BUDGET CASUALTY. If this does not land, SM-8 is MISSED and
+  # reported as a missed target — not reclassified as an intended deferral.
+  epic-4: backlog
+  4-1-attach-a-supporting-document: backlog
+  4-2-export-leave-as-csv: backlog
+  epic-4-retrospective: optional

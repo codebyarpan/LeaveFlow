@@ -1,0 +1,11 @@
+# Never ship the host virtualenv into the image: it holds macOS/arm64 wheels and a
+# `psycopg[binary]` that the deployed image deliberately does not use.
+.venv/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+tests/
+
+# Secrets never enter an image layer (NFR-20, AC5). The api service receives its
+# configuration from the environment, via docker-compose.yml.
+.env

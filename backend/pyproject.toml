@@ -1,0 +1,142 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leaveflow-backend"
+version = "0.1.0"
+description = "LeaveFlow — leave management for one organization per deployment."
+# AC7: Python 3.13, deliberately not 3.14. The spine pins it for library
+# compatibility; a later story must not upgrade it.
+requires-python = "==3.13.*"
+
+# AC7 — every version below matches the Architecture Spine's stack table exactly.
+# These are `==` pins, not floors. Do not upgrade them.
+dependencies = [
+    "fastapi==0.139.0",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.14.2",
+    # Hold the 2.0 line. 2.1 is at 2.1.0b3 — beta, --pre only.
+    "sqlalchemy==2.0.51",
+    "alembic==1.18.5",
+    # psycopg 3, not psycopg2. The deployed install is deliberately NOT
+    # psycopg[binary]: the binary wheel bundles a libpq that will not track
+    # system security updates. The api image installs the system libpq instead.
+    "psycopg==3.3.4",
+    "uvicorn==0.51.0",
+    # Story 1.2 consumes these. They are pinned here because the spine's stack
+    # table names them, and pinning late is how you pin into a corner.
+    # PyJWT, not python-jose (CVE-2024-33663).
+    "pyjwt==2.13.0",
+    # pwdlib, not passlib (last released 2020, broken against bcrypt 5).
+    "pwdlib[bcrypt]==0.3.0",
+    "bcrypt==5.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # pytest 9 errors — no longer warns — when a sync test consumes an async
+    # fixture. This story adds no async tests, and deliberately does NOT add
+    # pytest-asyncio: FastAPI's TestClient is synchronous.
+    "pytest==9.1.1",
+    # The mechanism that makes AC2 "fail the build rather than merely warn".
+    "import-linter==2.13",
+    # Required by starlette's TestClient. Not spine-governed; not imported by
+    # any module under app/ — contracts 3 and 4 below forbid exactly that.
+    "httpx==0.28.1",
+    # Host-side only. Supplies a bundled libpq so `alembic upgrade head` and the
+    # seed command run on the host, which is where AC1's commands two and three
+    # are issued. Same 3.3.4 pin; resolves to the identical psycopg release.
+    "psycopg[binary]==3.3.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*", "seed*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+# =============================================================================
+# AD-1 / NFR-13 — import direction, enforced mechanically.
+#
+# Read this before editing: a `layers` contract forbids UPWARD imports only. It
+# does not forbid skip-level imports — under contract 1 alone, `api` importing
+# `domain` is permitted, because `domain` is merely "lower". AC2 demands that
+# `api/` import NEITHER `repositories/` NOR `domain/`, which is strictly stronger.
+# Contract 2 is what actually closes that gap. Deleting it leaves a green test
+# suite over an unenforced architecture.
+# =============================================================================
+[tool.importlinter]
+root_package = "app"
+include_external_packages = true
+
+# 1. Ordering. Forbids all upward imports (domain -> anything, repositories ->
+#    services/api, services -> api). repositories and domain are NOT declared
+#    independent: repositories -> domain is allowed and required.
+[[tool.importlinter.contracts]]
+name = "Layered architecture (AD-1)"
+type = "layers"
+layers = ["app.api", "app.services", "app.repositories", "app.domain"]
+
+# 2. Closes the skip-level gap contract 1 leaves open. AC2 requires this.
+[[tool.importlinter.contracts]]
+name = "api/ talks only to services/ (AD-1)"
+type = "forbidden"
+source_modules = ["app.api"]
+forbidden_modules = ["app.repositories", "app.domain"]
+
+# 3. domain/ purity: no ORM, no web framework, no I/O library.
+#
+#    NOTE, and do not mistake the proxy for the guarantee: no import-graph tool
+#    can verify "performs no I/O". import-linter, tach and pytest-archon all
+#    reason over imports, not syscalls. AC2's "performs no I/O" is enforced HERE
+#    only by forbidding the libraries that perform it. A domain module that calls
+#    open() or socket() directly would satisfy this contract and violate AD-1.
+[[tool.importlinter.contracts]]
+name = "domain/ is pure (AD-1)"
+type = "forbidden"
+source_modules = ["app.domain"]
+forbidden_modules = [
+    "sqlalchemy",
+    "psycopg",
+    "alembic",
+    "fastapi",
+    "starlette",
+    "httpx",
+    "requests",
+]
+
+# 4. services/ raises typed domain exceptions and never imports HTTP (AC3).
+[[tool.importlinter.contracts]]
+name = "services/ imports no HTTP (AC3)"
+type = "forbidden"
+source_modules = ["app.services"]
+forbidden_modules = ["fastapi", "starlette", "httpx", "requests"]
+
+# 5. domain/ imports nothing from core/. Dev Notes, "Where core/ sits": core/ is
+#    a leaf, not a layer, and it reads settings from the environment — which is
+#    I/O. domain/ reaching into core/ is how purity erodes first, and contract 1
+#    cannot see it because core/ names no layer.
+[[tool.importlinter.contracts]]
+name = "domain/ does not import core/ (AD-1)"
+type = "forbidden"
+source_modules = ["app.domain"]
+forbidden_modules = ["app.core"]
+
+# 6. core/ is a leaf in the other direction too: it is read by api/, services/
+#    and jobs/, and reaches back into no layer. Without this contract core/ sits
+#    outside every rule above, and nothing mechanical stops core -> repositories.
+[[tool.importlinter.contracts]]
+name = "core/ is a leaf (AD-1)"
+type = "forbidden"
+source_modules = ["app.core"]
+forbidden_modules = ["app.api", "app.services", "app.repositories", "app.domain"]
+
+# 7. jobs/ (Story 2.10's rollover CLI, AD-7) orchestrates through services/ like
+#    any other entrypoint. It never reaches the web layer.
+[[tool.importlinter.contracts]]
+name = "jobs/ never imports api/ (AD-1)"
+type = "forbidden"
+source_modules = ["app.jobs"]
+forbidden_modules = ["app.api"]

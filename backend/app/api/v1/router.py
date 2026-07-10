@@ -1,0 +1,15 @@
+"""The single `api/v1` router. Every v1 route is reachable only through here.
+
+Implements: AD-1, and the base path `/api/v1` that api-contracts assumes throughout.
+
+Routers are aggregated here rather than attached to the app directly in `main.py`,
+so that the set of v1 routes is one readable list rather than a scatter of
+`include_router` calls across the composition root.
+"""
+
+from fastapi import APIRouter
+
+from app.api.v1 import health
+
+api_v1_router = APIRouter()
+api_v1_router.include_router(health.router)

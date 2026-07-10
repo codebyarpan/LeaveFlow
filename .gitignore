@@ -1,0 +1,25 @@
+# Secrets and local configuration (NFR-20, AC5).
+# .env is never committed; .env.example is.
+.env
+
+# TLS material for the proxy. The self-signed development certificate is
+# generated into a volume at container start, never committed: a private key
+# is a secret, and AC5 admits no secret into version control.
+certs/
+*.key
+*.crt
+*.pem
+
+# Python
+__pycache__/
+.venv/
+.pytest_cache/
+# Build metadata produced by `pip install -e .`
+*.egg-info/
+
+# Node / frontend
+node_modules/
+dist/
+
+# macOS
+.DS_Store

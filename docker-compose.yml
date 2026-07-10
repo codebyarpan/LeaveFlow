@@ -1,0 +1,140 @@
+# LeaveFlow — one deployment is one organization.
+#
+# Implements: AC1 (`docker compose up` is command one of three), AC4 (a `proxy` service
+# terminates TLS in front of `web` and `api`, which sit alongside `postgres:18`),
+# NFR-06, NFR-21.
+#
+# The top-level `version:` key is deliberately absent. It is obsolete under the Compose
+# Specification, is ignored, and emits a warning.
+#
+# ============================================================================
+# THERE IS NO `migrate` SERVICE HERE, AND ADDING ONE WOULD BREAK AC1.
+# ============================================================================
+# The obvious Compose idiom is a one-shot `migrate` service gated by
+# `depends_on: {condition: service_completed_successfully}`. It is wrong for this
+# project. NFR-21 and AC1 fix the setup as THREE OPERATOR COMMANDS:
+#
+#     1. docker compose up
+#     2. alembic upgrade head
+#     3. python -m seed
+#
+# An auto-migrate service makes command two a no-op. AC1's test would then pass against
+# a topology that no longer matches the documentation AC1 is asserting about — the
+# worst kind of green test, because nothing is visibly wrong.
+#
+# `postgres` gets a `pg_isready` healthcheck and `api` waits on `service_healthy`.
+# The migration stays with the operator.
+# ============================================================================
+
+services:
+  # The only service published to the host. Terminates TLS (AC4).
+  proxy:
+    build:
+      context: ./proxy
+    ports:
+      # HTTPS only. No plaintext port is published, so credentials and tokens cannot
+      # travel unencrypted (NFR-06).
+      - "${PROXY_HTTPS_PORT:-8443}:443"
+    depends_on:
+      - api
+      - web
+    volumes:
+      # The self-signed development certificate the proxy mints on first start.
+      # A named volume, not a bind mount: the key never touches the working tree, so
+      # it cannot be committed by accident (AC5).
+      - proxy_certs:/etc/nginx/certs
+    restart: unless-stopped
+
+  # The static React bundle, built and served by nginx with an SPA fallback.
+  web:
+    build:
+      context: ./frontend
+    # Not published. Reachable only through `proxy`, which is what makes AC4's
+    # "in front of" a fact about the topology rather than a convention.
+    expose:
+      - "80"
+    restart: unless-stopped
+
+  # FastAPI + uvicorn.
+  api:
+    build:
+      context: ./backend
+    expose:
+      - "8000"
+    environment:
+      # No DATABASE_URL here: `core/settings.py` builds it from the parts below,
+      # URL-quoting the password — one source of truth, no hand-synchronized copy
+      # (review D2). Two vantage points, one database: inside the compose network
+      # the database is `postgres:5432`; host-run tooling defaults to the published
+      # `localhost:5433`.
+      #
+      # `:?` (review P7): running `docker compose up` before `cp .env.example .env`
+      # must fail naming the missing variable — not crash-loop postgres on an empty
+      # password while `api` waits forever on a healthcheck that cannot pass.
+      POSTGRES_USER: ${POSTGRES_USER:?missing — cp .env.example .env and edit it}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?missing — cp .env.example .env and edit it}
+      POSTGRES_DB: ${POSTGRES_DB:?missing — cp .env.example .env and edit it}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?missing — cp .env.example .env and edit it}
+      # Defaults mirror core/settings.py, so an unset optional stays a default
+      # rather than arriving as an empty string that fails int parsing.
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-8}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:?missing — cp .env.example .env and edit it}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?missing — cp .env.example .env and edit it}
+      SEED_ADMIN_FULL_NAME: ${SEED_ADMIN_FULL_NAME:?missing — cp .env.example .env and edit it}
+      SEED_DEPARTMENT_NAME: ${SEED_DEPARTMENT_NAME:?missing — cp .env.example .env and edit it}
+    depends_on:
+      postgres:
+        # `condition: service_healthy` ERRORS if the referenced service declares no
+        # `healthcheck:`. postgres declares one below.
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    # Pinned, not the floating `postgres:18` tag. PostgreSQL 18 provides `uuidv7()` as
+    # a native built-in: no pgcrypto, no uuid-ossp, no CREATE EXTENSION.
+    image: postgres:18.4-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      # Published so the operator can run setup commands two and three from the host.
+      #
+      # 5433 by default, NOT 5432: a developer machine very often already runs a
+      # PostgreSQL on 5432, and `alembic upgrade head` would then migrate whichever
+      # database answered — silently, and not necessarily this one.
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    healthcheck:
+      # `api` waits on this. Without it, `condition: service_healthy` is a config error,
+      # and `api` would otherwise start against a postgres that is listening but has not
+      # yet finished creating the database.
+      #
+      # `-h localhost` forces the probe over TCP. Without it pg_isready uses the unix
+      # socket — which the image's first-boot initdb TEMP server also answers, so the
+      # check could pass moments before that server shuts down and the real one starts.
+      test: ["CMD-SHELL", "pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    volumes:
+      # `/var/lib/postgresql`, NOT `/var/lib/postgresql/data`.
+      #
+      # The postgres:18 image changed the convention: PGDATA now lives in a
+      # major-version-specific subdirectory (`/var/lib/postgresql/18/docker`), so that
+      # `pg_upgrade --link` does not have to cross a mount-point boundary. A volume
+      # mounted at the old `/data` path is reported as an "unused mount/volume" and the
+      # container refuses to start — which is how this was found, not how it was guessed.
+      - postgres_data:/var/lib/postgresql
+    restart: unless-stopped
+
+# `scheduler` (cron, for the Story 2.10 rollover) and the documents volume (Story 4.1)
+# are DEFERRED. They are not scaffolded here as empty services: an empty service that
+# does nothing is indistinguishable, to the next reader, from a service that is broken.
+
+volumes:
+  postgres_data:
+  proxy_certs:
