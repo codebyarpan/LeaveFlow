@@ -7,15 +7,20 @@ spine calls for (AD-7). Both are ordinary commands rather than endpoints or star
 hooks, so both are directly callable from a test with no running server.
 """
 
+import datetime
 import logging
 import sys
 
 from pydantic import ValidationError
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import OperationalError
 
 from app.core.logging import configure_logging
+from app.core.security import hash_password
 from app.core.settings import get_settings
+from app.domain import vocabulary
+from app.repositories.models import Department, Employee
 
 logger = logging.getLogger("seed")
 
@@ -23,18 +28,17 @@ logger = logging.getLogger("seed")
 def seed() -> None:
     """Insert LeaveFlow's seed data. Idempotent: running it twice changes nothing.
 
-    Story 1.1 seeds nothing. There is nothing to seed — this story creates no domain
-    table (AC6). The command still connects and still exits 0, because AC1 fixes the
-    setup as three commands and a third command that cannot run is not a setup step.
+    Story 1.2 seeds exactly one Department and exactly one Admin Employee (AC2), both
+    taken from the environment (`SEED_DEPARTMENT_NAME`, `SEED_ADMIN_*`). The Admin has
+    `manager_id` NULL and `is_active` true — it is the top of every reporting chain and
+    the only account that exists before Story 1.6 lets an Admin create others (G1/GAP-5,
+    AD-11: the initial password is Admin-supplied, with no reset/change/complexity path).
 
-    Connecting rather than returning immediately is the point: it verifies that
-    DATABASE_URL is reachable and that `alembic upgrade head` has already run, which
-    is what makes a failure here legible as "you skipped command two" rather than
-    surfacing three stories later as a missing table.
+    Connecting first verifies that DATABASE_URL is reachable and that `alembic upgrade
+    head` has already run, which is what makes a failure here legible as "you skipped
+    command two" rather than surfacing as a missing table.
 
-    What arrives, and where:
-      - Story 1.2 — the Admin employee and their Department, from SEED_ADMIN_* and
-        SEED_DEPARTMENT_NAME.
+    What arrives later:
       - Story 2.1 — the EL, CL and FL Leave Types, each with
         `requires_supporting_document = false`. AD-11: as data, from here. Never from
         a migration, and never as constants in `domain/vocabulary.py` — SM-5 requires
@@ -58,13 +62,58 @@ def seed() -> None:
                     "Run `alembic upgrade head` (setup command two) before the seed."
                 )
 
-            # Story 1.1 seeds nothing, so nothing is inserted and nothing is committed.
-            # The seeds that arrive later are idempotent by construction — an
-            # INSERT ... ON CONFLICT DO NOTHING keyed on the natural key, never a
-            # "SELECT then INSERT if absent", which races against a concurrent seed.
+            # Hash the Admin password up front. Settings already reject an empty or
+            # CHANGE_ME value; a value over bcrypt's 72-byte limit still slips through,
+            # and `hash_password` raises for it — caught here into a legible startup
+            # error naming the variable, never a raw traceback (Task 6, trap 3).
+            try:
+                admin_password_hash = hash_password(settings.seed_admin_password)
+            except ValueError as too_long:
+                raise SystemExit(str(too_long)) from too_long
+
+            # Department: select-by-name, insert if absent. The ERD declares no
+            # `UNIQUE (name)`, so `ON CONFLICT` has no constraint to target here; the
+            # seed is single-process, so select-then-insert cannot race. Idempotent:
+            # a second run finds the row and reuses its id.
+            department_id = connection.execute(
+                select(Department.id).where(
+                    Department.name == settings.seed_department_name
+                )
+            ).scalar_one_or_none()
+
+            if department_id is None:
+                department_id = connection.execute(
+                    Department.__table__.insert()
+                    .values(name=settings.seed_department_name)
+                    .returning(Department.id)
+                ).scalar_one()
+
+            # Admin: INSERT ... ON CONFLICT (email) DO NOTHING, keyed on the UNIQUE
+            # email. Idempotent by construction — a second run inserts nothing and
+            # leaves the existing hash untouched (so re-seeding never re-salts the
+            # Admin out from under a working login). `role` is `vocabulary.ROLE_ADMIN`,
+            # never the literal "ADMIN": the AD-21 literal check scans seed/ too.
+            connection.execute(
+                pg_insert(Employee)
+                .values(
+                    department_id=department_id,
+                    manager_id=None,
+                    email=settings.seed_admin_email,
+                    full_name=settings.seed_admin_full_name,
+                    role=vocabulary.ROLE_ADMIN,
+                    joining_date=datetime.date.today(),
+                    is_active=True,
+                    password_hash=admin_password_hash,
+                )
+                .on_conflict_do_nothing(index_elements=["email"])
+            )
+
+            connection.commit()
+
             logger.info(
-                "Seed complete: nothing to seed in Story 1.1 "
-                "(no domain table exists yet — AC6, AD-11)."
+                "Seed complete: one Department (%s) and one Admin (%s) present (AC2).",
+                settings.seed_department_name,
+                settings.seed_admin_email,
             )
     finally:
         # On every path, including failure — an abandoned pool is a leak the

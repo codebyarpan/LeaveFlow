@@ -24,6 +24,12 @@ from app.core.settings import get_settings
 # migration that drops the tables it could not find.
 from app.repositories.base import Base
 
+# Importing the models registers them on `Base.metadata`, which is what makes
+# `--autogenerate` and `alembic check` see them. Without this line the check would
+# emit a diff proposing to DROP `department` and `employee` — the exact silent-drop
+# failure the comment above warns about. Imported for the side effect, hence `noqa`.
+from app.repositories import models  # noqa: E402, F401
+
 config = context.config
 
 if config.config_file_name is not None:

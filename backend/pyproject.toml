@@ -80,11 +80,25 @@ type = "layers"
 layers = ["app.api", "app.services", "app.repositories", "app.domain"]
 
 # 2. Closes the skip-level gap contract 1 leaves open. AC2 requires this.
+#
+# `allow_indirect_imports` is "true" — and MUST be, from Story 1.2 onward. AC2 forbids a
+# *route* from importing `repositories/` or `domain/` DIRECTLY, sidestepping `services/`.
+# It does NOT forbid the layered call chain itself: a route calls a service, and that
+# service raises a `DomainError` (imports `domain/`) and opens a connection (imports
+# `repositories/`). That makes `app.api -> app.domain` a real INDIRECT edge through
+# `app.services` — the intended architecture, not a violation. Without this option the
+# forbidden contract also flags indirect edges, and the first endpoint that calls a
+# service (POST /auth/login, this story) would fail the build for obeying AD-1. Story
+# 1.1 never exercised an api->service chain, so the gap stayed latent until now.
+#
+# The strictness the other forbidden contracts need (3, 4, 5, 6, 7) is the OPPOSITE:
+# `domain/` must not reach SQLAlchemy even indirectly. So this option is set HERE only.
 [[tool.importlinter.contracts]]
 name = "api/ talks only to services/ (AD-1)"
 type = "forbidden"
 source_modules = ["app.api"]
 forbidden_modules = ["app.repositories", "app.domain"]
+allow_indirect_imports = "true"
 
 # 3. domain/ purity: no ORM, no web framework, no I/O library.
 #

@@ -1,19 +1,21 @@
-"""After `alembic upgrade head`, `alembic_version` exists and no domain table does.
+"""After `alembic upgrade head`, `alembic_version` is stamped at the current head.
 
-Implements the test side of: AC6, AC1 (command two of the setup sequence), AD-11.
-This is the third of the three substantive tests the story's *Testing standards*
-section names.
+Implements the test side of: AC1 (command two of the setup sequence), AD-11.
 
 Runs against real PostgreSQL. Assumes `alembic upgrade head` has already run — which
 is exactly the state AC1's sequence leaves the database in.
+
+The exact *shape* of the schema at head — that it is precisely `department` and
+`employee` and their constraints — is `test_schema_1_2.py`'s job (Story 1.2). This file
+keeps only the migration-mechanics smoke: the version table is stamped, and no migration
+ever seeded a Leave Type row.
 """
 
 from sqlalchemy import Connection, text
 
-# The single revision Story 1.1 ships. When Story 1.2 adds the first real migration,
-# this constant moves and the assertion below keeps its meaning: "the database is
-# stamped at head", not "the database is stamped at some revision or other".
-BASELINE_REVISION = "0001_baseline"
+# The current head revision. It moves forward one story at a time; the assertion below
+# keeps its meaning — "the database is stamped at head", not "at some revision or other".
+HEAD_REVISION = "0002_department_and_employee"
 
 
 def _public_tables(db_connection: Connection) -> set[str]:
@@ -23,8 +25,8 @@ def _public_tables(db_connection: Connection) -> set[str]:
     return {row[0] for row in rows}
 
 
-def test_alembic_version_exists_and_is_stamped(db_connection: Connection) -> None:
-    """AC6: `alembic_version` exists and carries exactly one row.
+def test_alembic_version_exists_and_is_stamped_at_head(db_connection: Connection) -> None:
+    """`alembic_version` exists and carries exactly the head revision.
 
     The row is what distinguishes "migrated and up to date" from "never migrated".
     With zero revision files Alembic would create this table and leave it EMPTY, and
@@ -34,17 +36,7 @@ def test_alembic_version_exists_and_is_stamped(db_connection: Connection) -> Non
 
     versions = db_connection.execute(text("SELECT version_num FROM alembic_version")).scalars().all()
 
-    assert versions == [BASELINE_REVISION]
-
-
-def test_no_domain_table_exists(db_connection: Connection) -> None:
-    """AC6: this story creates no domain table.
-
-    Asserted as an exact set rather than a set of absences. `assert "employee" not in
-    tables` would pass against a story that created `leave_request` instead; only
-    equality catches the table nobody thought to name.
-    """
-    assert _public_tables(db_connection) == {"alembic_version"}
+    assert versions == [HEAD_REVISION]
 
 
 def test_no_leave_type_row_was_inserted_by_a_migration(db_connection: Connection) -> None:
@@ -59,7 +51,6 @@ def test_no_leave_type_row_was_inserted_by_a_migration(db_connection: Connection
     ).scalar_one()
 
     assert not leave_type_exists, (
-        "`leave_type` exists after Story 1.1's migration. AC6 forbids this story from "
-        "creating a domain table, and AD-11 forbids any migration from inserting a "
-        "Leave Type row."
+        "`leave_type` exists before Story 2.1. AD-11 forbids any migration from "
+        "inserting a Leave Type row — the table and its rows arrive via the seed."
     )

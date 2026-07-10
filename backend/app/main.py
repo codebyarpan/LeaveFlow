@@ -16,9 +16,10 @@ an exception class to a handler at startup is not a route reaching into the doma
 
 from fastapi import FastAPI
 
-from app.api.v1.errors import domain_error_handler
+from app.api.v1.errors import CODE_TO_STATUS, domain_error_handler
 from app.api.v1.router import api_v1_router
 from app.core.logging import configure_logging
+from app.domain import vocabulary
 from app.domain.errors import DomainError
 
 configure_logging()
@@ -39,3 +40,15 @@ app.include_router(api_v1_router, prefix="/api/v1")
 # against the base class, so every DomainError subclass a later story adds is
 # mapped without touching this file. A second handler is a defect.
 app.add_exception_handler(DomainError, domain_error_handler)
+
+# AC3/AC8 — the `code -> status` map is populated HERE, the composition root, because
+# `api/v1/errors.py` may import neither the vocabulary (AD-21 forbids the literal) nor
+# `domain/` (contract 2). `main.py` sits outside every contract precisely so it can
+# perform this one wiring. Story 1.2 writes the map's first two entries; both codes are
+# 401 per api-contracts §2. Later stories add their codes here beside their vocabulary.
+CODE_TO_STATUS.update(
+    {
+        vocabulary.AUTH_FAILED: 401,
+        vocabulary.TOKEN_INVALID: 401,
+    }
+)

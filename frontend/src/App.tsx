@@ -1,18 +1,20 @@
 /**
- * The application shell.
+ * The application root: the login gate, and the shell it protects.
  *
- * Implements: AC8 (a usable shell at common desktop and tablet widths), NFR-18.
+ * Implements: AC8 (a usable shell), AC10 (an unauthenticated visitor sees the login
+ * screen; a successful login stores the token and lands them on the shell), NFR-18.
  *
- * This is a SHELL, and deliberately nothing more. Per-role surfaces land in
- * `src/features/` from Story 1.2 onward. The spine explicitly defers the choice of
- * styling approach and component library, and the story's delivery context names AC8 as
- * the acceptance criterion with slack in it — the import-direction check and the
- * no-domain-table guarantee are what the next 26 stories rest on, not this.
- *
- * It does one substantive thing: read `GET /api/v1/health` through the typed client and
- * TanStack Query, which proves the whole client seam works before any feature needs it.
+ * The gate is deliberately minimal for Story 1.2: the presence of a stored token decides
+ * which surface renders. There is no router — the spine defers that choice, and this
+ * story does not force it. Story 1.3 makes the token *mean* something on every request
+ * (the Bearer header) and clears it on a 401; here it is only the switch between the
+ * login screen and the shell.
  */
+import { useState } from 'react'
+
 import { useHealth } from './api'
+import { getToken, setToken } from './api/session'
+import { LoginPage } from './features/auth/LoginPage'
 
 function HealthIndicator() {
   const { data, isPending, isError, error } = useHealth()
@@ -23,7 +25,7 @@ function HealthIndicator() {
   return <span className="badge badge--up">api {data.status}</span>
 }
 
-export function App() {
+function AppShell() {
   return (
     <div className="shell">
       <header className="shell__header">
@@ -33,15 +35,15 @@ export function App() {
 
       <main className="shell__main">
         <section className="panel">
-          <h2>Project foundation</h2>
+          <h2>Signed in</h2>
           <p>
-            The skeleton is in place: a four-package backend whose import direction is
-            enforced by the test suite, a migration that creates no domain table, and a
-            seed command that seeds nothing yet.
+            You are authenticated. The per-role surfaces — a dashboard, the request
+            lifecycle, the team calendar — arrive across Epics 2 and 3; this shell is
+            what they render into.
           </p>
           <p className="muted">
-            Sign-in arrives in Story 1.2. Nothing here is behind a role gate, because no
-            role exists.
+            The session is a Bearer token held in the browser. Story 1.3 attaches it to
+            every request and signs you out when the server rejects it.
           </p>
         </section>
       </main>
@@ -51,4 +53,23 @@ export function App() {
       </footer>
     </div>
   )
+}
+
+export function App() {
+  // Initialized from storage so a reload keeps the visitor signed in (AC10). The state
+  // is what makes the switch reactive: storing the token alone would not re-render.
+  const [token, setSessionToken] = useState<string | null>(() => getToken())
+
+  if (token === null) {
+    return (
+      <LoginPage
+        onAuthenticated={(issued) => {
+          setToken(issued) // persist to localStorage (survives reload)
+          setSessionToken(issued) // flip this render to the shell
+        }}
+      />
+    )
+  }
+
+  return <AppShell />
 }

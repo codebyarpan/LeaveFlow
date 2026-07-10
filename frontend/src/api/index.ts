@@ -6,6 +6,9 @@
  */
 export { API_BASE_PATH, ApiError, apiFetch } from './client'
 export type { ErrorEnvelope } from './client'
+export { login, useLogin } from './auth'
+export type { Credentials, LoginResponse } from './auth'
+export { clearToken, getToken, setToken, TOKEN_STORAGE_KEY } from './session'
 export { useHealth } from './health'
 export type { HealthResponse } from './health'
 export { queryClient } from './queryClient'

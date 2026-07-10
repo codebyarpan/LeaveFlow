@@ -109,10 +109,18 @@ def _migration_files() -> list[Path]:
     return sorted(p for p in VERSIONS_DIR.glob("*.py") if p.name != "__init__.py")
 
 
-def test_there_is_exactly_one_migration_and_it_is_the_baseline() -> None:
-    """AC6: Story 1.1 ships one revision, and it is the no-op baseline."""
+def test_the_migration_history_is_the_expected_ordered_chain() -> None:
+    """The revision files are exactly the baseline then Story 1.2's schema, in order.
+
+    Story 1.1 shipped one no-op baseline; Story 1.2 adds `0002`, the first migration
+    that creates schema. Asserted as an exact ordered list rather than a count, so a
+    stray or misnamed revision file is caught, not merely tallied. Later stories extend
+    this list as they add migrations — the `_SQL_DML` guard below needs no such edit,
+    because it parametrizes over whatever files exist.
+    """
     assert [p.name for p in _migration_files()] == [
-        "0001_baseline_baseline_no_domain_table_ac6_ad_11.py"
+        "0001_baseline_baseline_no_domain_table_ac6_ad_11.py",
+        "0002_department_and_employee.py",
     ]
 
 

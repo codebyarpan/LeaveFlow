@@ -69,6 +69,12 @@ def test_every_contract_in_pyproject_is_actually_exercised() -> None:
         "api/ talks only to services/ (AD-1)": {
             "source_modules": ["app.api"],
             "forbidden_modules": ["app.repositories", "app.domain"],
+            # Pinned so the option cannot be silently dropped: AC2 forbids api/ from
+            # importing repositories/ or domain/ DIRECTLY, not the layered call chain
+            # api -> services -> domain. Removing this would fail the build the moment a
+            # route calls a service that raises a DomainError (Story 1.2's login onward);
+            # flipping it to strict would unenforce nothing but break the architecture.
+            "allow_indirect_imports": "true",
         },
         "domain/ is pure (AD-1)": {
             "source_modules": ["app.domain"],
