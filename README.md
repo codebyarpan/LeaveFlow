@@ -1,5 +1,30 @@
 # LeaveFlow
 
+LeaveFlow is an Employee Leave Management System that enables employees to request leave, managers to review and approve requests, and administrators to manage organizational leave policies. It is built using the BMAD (Business Modeling and Agile Development) methodology to demonstrate an AI-first software engineering workflow.
+
+## Features
+
+- Employee authentication with JWT
+- Role-based access control
+- Leave request and approval workflow
+- Leave balance management
+- Holiday and leave policy management
+- Audit logging
+- Dockerized development environment
+  
+## Tech Stack
+
+- FastAPI
+- React + Vite
+- PostgreSQL
+- Alembic
+- Docker Compose
+- TanStack Query
+- Python 3.13
+- TypeScript 6.0.3
+
+---
+
 Leave management for one organization per deployment.
 
 One deployment is one organization. There is no tenant column on any table, and there
