@@ -120,6 +120,9 @@ last_updated: 2026-07-11
 # story 1-5 code review 2026-07-11: 3 patches applied, 2 deferred, review -> done
 # story 1-6 created 2026-07-11: backlog -> ready-for-dev
 # story 1-6 moved ready-for-dev -> in-progress -> review 2026-07-11
+# story 1-7 created 2026-07-11: backlog -> ready-for-dev
+# story 1-7 moved ready-for-dev -> in-progress -> review 2026-07-11
+# story 1-7 code review 2026-07-11: 3 patches applied, 2 deferred, review -> done
 project: LeaveFlow
 project_key: NOKEY
 tracking_system: file-system
@@ -136,7 +139,7 @@ development_status:
   1-4-authorization-primitives-the-role-gate-scoped-reads-and-the-404-convention: done
   1-5-manage-departments: done
   1-6-manage-employees-and-reporting-lines: done
-  1-7-scope-authority-to-the-reporting-relationship: backlog
+  1-7-scope-authority-to-the-reporting-relationship: done
   1-8-edit-my-own-name: backlog
   epic-1-retrospective: optional
 
