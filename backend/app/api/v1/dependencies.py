@@ -28,12 +28,13 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from typing import Protocol
+from typing import Callable, Protocol
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.services import auth as auth_service
+from app.services import authorization as authz
 
 
 class DepartmentShape(Protocol):
@@ -84,3 +85,36 @@ def get_current_employee(
     """
     token = credentials.credentials if credentials is not None else ""
     return auth_service.resolve_actor(token)
+
+
+def require_role(*allowed: str) -> Callable[..., Actor]:
+    """Build a dependency that admits only callers whose role is one of `allowed` (AC3, AC5).
+
+    A dependency *factory*: `require_role(authz.ROLE_ADMIN)` captures the allowed roles and
+    returns the inner callable FastAPI resolves. The inner dependency chains
+    `Depends(get_current_employee)` — so authentication runs first, unchanged — then calls
+    `authz.assert_role`, which raises `403 ACTION_NOT_PERMITTED` before the route body runs
+    when the role is not admitted (AD-14: the refusal is in an `api/` dependency, at the
+    boundary, decided against the DB-resolved actor, never a token claim or a rendered
+    control). On success it returns the `actor`, so a route can write
+    `actor: Actor = Depends(require_role(...))` and still read the caller.
+
+    The role literals come through `app.services.authorization` (an allowed `api →
+    services` edge); this module must not `from app.domain.vocabulary import ...` — contract
+    2 forbids it even under `TYPE_CHECKING`, and the literal scan forbids the bare string.
+    The gate builds ON TOP of `get_current_employee`; it does not replace it, and that
+    dependency stays authentication-only.
+
+    At least one role must be passed. `require_role()` with no arguments would build a gate
+    whose `allowed` is empty, so `assert_role`'s `role not in ()` refuses *every* caller —
+    a permanently-closed endpoint with no import- or startup-time signal. Fail loud on the
+    mis-declaration instead.
+    """
+    if not allowed:
+        raise ValueError("require_role() needs at least one allowed role")
+
+    def _require_role(actor: Actor = Depends(get_current_employee)) -> Actor:
+        authz.assert_role(actor, allowed)
+        return actor
+
+    return _require_role

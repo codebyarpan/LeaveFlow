@@ -12,6 +12,13 @@ What arrives, and where:
   `TOKEN_INVALID`. `TOKEN_INVALID` is declared now, with the rest of login's
   vocabulary, even though Story 1.3 is the first to *raise* it: the vocabulary of a
   feature lands in one commit, not scattered across the stories that consume it.
+- Story 1.4 (here) — the authorization codes `ACTION_NOT_PERMITTED` (→ 403, "may see,
+  may not act") and `RESOURCE_NOT_FOUND` (→ 404). The 404 code is the one enumerated
+  value api-contracts §2's list does not name: `NFR-17` requires *every* non-2xx body to
+  carry the `{code, message, details}` envelope, so the not-found refusal is enveloped
+  like every other refusal rather than left as FastAPI's bare `{"detail": "Not Found"}`.
+  Every `404` — a genuine "no such id" and an out-of-scope scope miss alike — carries this
+  one code, byte-identically, so a Manager cannot probe which resources exist (`AD-10`).
 - Story 2.1 — the Leave Type codes, as seeded *data*, not as constants here.
   `SM-5` requires a fourth Leave Type to be addable with no code change; a constant
   in this module would be exactly the code change it forbids.
@@ -42,10 +49,20 @@ ROLE_ADMIN = "ADMIN"
 AUTH_FAILED = "AUTH_FAILED"
 TOKEN_INVALID = "TOKEN_INVALID"
 
+# Authorization codes (Story 1.4, api-contracts §1). `ACTION_NOT_PERMITTED` → 403 is
+# reserved for exactly "the actor may see this resource but may not act upon it", decided
+# by the role gate before any row is read. `RESOURCE_NOT_FOUND` → 404 is the single code
+# every not-found carries — a nonexistent id and a scope miss are indistinguishable down
+# to the bytes (AD-10). Both wire to their statuses in `main.py`.
+ACTION_NOT_PERMITTED = "ACTION_NOT_PERMITTED"
+RESOURCE_NOT_FOUND = "RESOURCE_NOT_FOUND"
+
 __all__ = [
     "ROLE_EMPLOYEE",
     "ROLE_MANAGER",
     "ROLE_ADMIN",
     "AUTH_FAILED",
     "TOKEN_INVALID",
+    "ACTION_NOT_PERMITTED",
+    "RESOURCE_NOT_FOUND",
 ]

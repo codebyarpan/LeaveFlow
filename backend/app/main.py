@@ -50,5 +50,10 @@ CODE_TO_STATUS.update(
     {
         vocabulary.AUTH_FAILED: 401,
         vocabulary.TOKEN_INVALID: 401,
+        # Story 1.4 — the authorization statuses. 403 is reserved for "may see, may not
+        # act" (the role gate); 404 is the byte-identical not-found the scope convention
+        # raises for both a nonexistent and an out-of-scope identifier (api-contracts §1).
+        vocabulary.ACTION_NOT_PERMITTED: 403,
+        vocabulary.RESOURCE_NOT_FOUND: 404,
     }
 )
