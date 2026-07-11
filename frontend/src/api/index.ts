@@ -13,4 +13,12 @@ export { useHealth } from './health'
 export type { HealthResponse } from './health'
 export { ME_QUERY_KEY, useMe } from './me'
 export type { DepartmentBrief, MeResponse } from './me'
+export {
+  DEPARTMENTS_QUERY_KEY,
+  useCreateDepartment,
+  useDeleteDepartment,
+  useDepartments,
+  useRenameDepartment,
+} from './departments'
+export type { Department, Page } from './departments'
 export { queryClient } from './queryClient'

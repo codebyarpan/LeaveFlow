@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react'
 import { ME_QUERY_KEY, queryClient, useHealth, useMe } from './api'
 import { getToken, SESSION_EXPIRED_EVENT, setToken } from './api/session'
 import { LoginPage } from './features/auth/LoginPage'
+import { DepartmentsPage } from './features/departments/DepartmentsPage'
 
 function HealthIndicator() {
   const { data, isPending, isError, error } = useHealth()
@@ -63,6 +64,8 @@ function AppShell() {
             request, and the server signs you out when it rejects one.
           </p>
         </section>
+
+        <DepartmentsPage />
       </main>
 
       <footer className="shell__footer">

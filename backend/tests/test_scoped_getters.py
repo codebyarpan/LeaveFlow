@@ -10,9 +10,24 @@ architecture §7 ("there is no `get_leave_request(id)`").
 
 A reflection test reads *signatures*, not *intent*. It cannot know that
 `get_by_id_with_department` is legitimately actor-less because it resolves the caller
-themselves, before any scope exists. So the two actor-resolution getters are named in an
-explicit EXEMPT registry, each already documenting *why* in its own docstring. Every
-other repository getter must take the acting Employee.
+themselves, before any scope exists. So the exempt getters are named in an explicit EXEMPT
+registry, each already documenting *why* in its own docstring. Every other repository getter
+must take the acting Employee.
+
+There are two grounds for exemption, and the registry holds both:
+
+  1. Actor RESOLUTION — a getter that answers "who is the caller" before any scope exists
+     (`get_by_email`, `get_by_id_with_department`). AD-10's rule cannot apply: there is no
+     actor yet to scope to.
+  2. Scope-`all` REFERENCE reads — a getter over an organization-wide table whose
+     api-contracts scope is `all`, returning rows that are NOT Employee-derived data, so
+     there is no per-row predicate to apply and no cross-Employee disclosure to guard
+     (`list_departments`, `get_department` — a Department is `{id, name}`; leave types and
+     holidays follow in Epic 2, all api-contracts scope `all`). AD-10 (AC1) governs getters
+     that return *another Employee's data*; these return none, so they are a convention-bound
+     false positive of the name-matcher, exactly what "the reach of the net, stated honestly"
+     below anticipates. The honest resolution is EXEMPT-with-rationale, never an unused
+     `actor` param that would imply a scoping that does not happen.
 
 --- Why this passes today, and what it is really for ---
 
@@ -44,11 +59,22 @@ import pytest
 
 import app.repositories as repositories_pkg
 
-# The getters that legitimately take no actor, because they run during actor RESOLUTION —
-# before a session's scope exists. Both already carry a "why exempt" docstring in
-# `repositories/employee.py`. Adding to this set is a deliberate act a reviewer sees; it is
-# not the default escape hatch. A new entry here must come with the same kind of docstring.
-EXEMPT: frozenset[str] = frozenset({"get_by_email", "get_by_id_with_department"})
+# The getters that legitimately take no actor, on the two grounds the module docstring
+# states: actor RESOLUTION (they run before any scope exists), and scope-`all` REFERENCE
+# reads (they return no Employee-derived data, so AD-10's per-Employee scoping does not
+# apply). Each carries a "why exempt" docstring at its definition. Adding to this set is a
+# deliberate act a reviewer sees; it is not the default escape hatch. A new entry here must
+# come with the same kind of docstring on the getter.
+EXEMPT: frozenset[str] = frozenset(
+    {
+        # Actor-resolution getters (repositories/employee.py).
+        "get_by_email",
+        "get_by_id_with_department",
+        # Scope-`all` reference reads (repositories/department.py) — Story 1.5, Trap 1.
+        "list_departments",
+        "get_department",
+    }
+)
 
 # A repository read is named with one of these verbs. Writes (`create_`, `update_`,
 # `delete_`) are not getters and are governed by the role gate, not the scope contract.

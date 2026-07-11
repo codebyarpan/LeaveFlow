@@ -19,6 +19,9 @@ What arrives, and where:
   like every other refusal rather than left as FastAPI's bare `{"detail": "Not Found"}`.
   Every `404` — a genuine "no such id" and an out-of-scope scope miss alike — carries this
   one code, byte-identically, so a Manager cannot probe which resources exist (`AD-10`).
+- Story 1.5 (here) — the error code `DEPARTMENT_NOT_EMPTY` (→ 409): a `DELETE` of a
+  Department that still has assigned Employees is refused, naming the obstruction rather
+  than letting the FK RESTRICT surface as a bare 500 (`FR-05`, `AD-5`).
 - Story 2.1 — the Leave Type codes, as seeded *data*, not as constants here.
   `SM-5` requires a fourth Leave Type to be addable with no code change; a constant
   in this module would be exactly the code change it forbids.
@@ -57,6 +60,12 @@ TOKEN_INVALID = "TOKEN_INVALID"
 ACTION_NOT_PERMITTED = "ACTION_NOT_PERMITTED"
 RESOURCE_NOT_FOUND = "RESOURCE_NOT_FOUND"
 
+# Resource-state code (Story 1.5, api-contracts §2). `DEPARTMENT_NOT_EMPTY` → 409 is the
+# refusal to delete a Department that still has assigned Employees: the emptiness check is
+# the gate (AD-5), so the obstruction is named in the envelope rather than reaching the
+# client as the FK RESTRICT's bare 500. Wired to 409 in `main.py`.
+DEPARTMENT_NOT_EMPTY = "DEPARTMENT_NOT_EMPTY"
+
 __all__ = [
     "ROLE_EMPLOYEE",
     "ROLE_MANAGER",
@@ -65,4 +74,5 @@ __all__ = [
     "TOKEN_INVALID",
     "ACTION_NOT_PERMITTED",
     "RESOURCE_NOT_FOUND",
+    "DEPARTMENT_NOT_EMPTY",
 ]

@@ -55,5 +55,8 @@ CODE_TO_STATUS.update(
         # raises for both a nonexistent and an out-of-scope identifier (api-contracts §1).
         vocabulary.ACTION_NOT_PERMITTED: 403,
         vocabulary.RESOURCE_NOT_FOUND: 404,
+        # Story 1.5 — a non-empty Department cannot be deleted. The service counts first
+        # and raises this typed refusal; the FK RESTRICT is only the backstop (AD-5).
+        vocabulary.DEPARTMENT_NOT_EMPTY: 409,
     }
 )
