@@ -311,6 +311,7 @@ browser login. Note: this environment has the standalone `docker-compose` binary
 - `backend/tests/integration/test_schema_1_2.py`
 - `backend/tests/integration/test_login.py`
 - `backend/tests/integration/test_seed.py`
+- `backend/tests/integration/test_model_migration_agreement.py` (added in code-review pass)
 
 **New — frontend**
 - `frontend/src/api/auth.ts`
@@ -340,3 +341,4 @@ browser login. Note: this environment has the standalone `docker-compose` binary
 | --- | --- |
 | 2026-07-10 | Story created (ultimate context engine analysis: epics, spine, api-contracts, ERD, PRD, Story 1.1 + its adversarial review, and library APIs verified live against installed pins). Status: ready-for-dev. |
 | 2026-07-11 | Implemented all 9 tasks / 10 ACs: migration 0002 (`department`, `employee`), ORM models, `domain/vocabulary.py` + standing literal check, `core/security.py` (bcrypt via pwdlib + PyJWT), the auth service and `POST /auth/login`, the Department+Admin seed, and the React login screen. Contract 2 gained `allow_indirect_imports` to permit the layered api→service→domain chain (first exercised here). 59 backend tests pass; verified end-to-end via curl and a real browser login. Status: review. |
+| 2026-07-11 | Code-review fixes (5 findings): guarded all `localStorage` access in `session.ts` against private-mode/quota throws and flipped React state before persisting (blank-screen / stranded-login robustness); added `test_model_migration_agreement.py` running `alembic check` in the suite so the model↔migration agreement is enforced, not just documented; seed department lookup now `.limit(1).first()` (no crash on a duplicate name post-1.5); seed hashes the Admin password only on the insert path (skips ~250ms bcrypt on re-seed); `services/auth.py` opens its Session with `expire_on_commit=False` so the copied transaction idiom is commit-safe for the write commands. 60 backend tests pass; frontend builds; browser login re-verified. |

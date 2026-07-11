@@ -62,24 +62,18 @@ def seed() -> None:
                     "Run `alembic upgrade head` (setup command two) before the seed."
                 )
 
-            # Hash the Admin password up front. Settings already reject an empty or
-            # CHANGE_ME value; a value over bcrypt's 72-byte limit still slips through,
-            # and `hash_password` raises for it — caught here into a legible startup
-            # error naming the variable, never a raw traceback (Task 6, trap 3).
-            try:
-                admin_password_hash = hash_password(settings.seed_admin_password)
-            except ValueError as too_long:
-                raise SystemExit(str(too_long)) from too_long
-
             # Department: select-by-name, insert if absent. The ERD declares no
-            # `UNIQUE (name)`, so `ON CONFLICT` has no constraint to target here; the
-            # seed is single-process, so select-then-insert cannot race. Idempotent:
-            # a second run finds the row and reuses its id.
+            # `UNIQUE (name)`, so `ON CONFLICT` has no constraint to target here.
+            # `.limit(1).first()` reuses an existing row and — unlike
+            # `scalar_one_or_none()` — does NOT crash if a later story (1.5 onward) has
+            # created a second department sharing this name: the seed's contract is to
+            # reuse a row, not to police uniqueness the schema deliberately omits. The
+            # seed is single-process, so select-then-insert cannot race.
             department_id = connection.execute(
-                select(Department.id).where(
-                    Department.name == settings.seed_department_name
-                )
-            ).scalar_one_or_none()
+                select(Department.id)
+                .where(Department.name == settings.seed_department_name)
+                .limit(1)
+            ).scalars().first()
 
             if department_id is None:
                 department_id = connection.execute(
@@ -88,25 +82,46 @@ def seed() -> None:
                     .returning(Department.id)
                 ).scalar_one()
 
-            # Admin: INSERT ... ON CONFLICT (email) DO NOTHING, keyed on the UNIQUE
-            # email. Idempotent by construction — a second run inserts nothing and
-            # leaves the existing hash untouched (so re-seeding never re-salts the
-            # Admin out from under a working login). `role` is `vocabulary.ROLE_ADMIN`,
-            # never the literal "ADMIN": the AD-21 literal check scans seed/ too.
-            connection.execute(
-                pg_insert(Employee)
-                .values(
-                    department_id=department_id,
-                    manager_id=None,
-                    email=settings.seed_admin_email,
-                    full_name=settings.seed_admin_full_name,
-                    role=vocabulary.ROLE_ADMIN,
-                    joining_date=datetime.date.today(),
-                    is_active=True,
-                    password_hash=admin_password_hash,
-                )
-                .on_conflict_do_nothing(index_elements=["email"])
+            # Admin: insert only when absent. The existence check lets a re-seed skip the
+            # bcrypt hash (~250ms, cost-12) it would otherwise compute and immediately
+            # throw away — the common case, since the Admin already exists after the first
+            # run. The INSERT still carries `ON CONFLICT (email) DO NOTHING`, so the
+            # check-then-insert is race-safe even though the seed is single-process today.
+            admin_exists = (
+                connection.execute(
+                    select(Employee.id)
+                    .where(Employee.email == settings.seed_admin_email)
+                    .limit(1)
+                ).scalars().first()
+                is not None
             )
+
+            if not admin_exists:
+                # Hash only on the insert path. Settings already reject an empty or
+                # CHANGE_ME value; a value over bcrypt's 72-byte limit still slips
+                # through, and `hash_password` raises for it — caught here into a legible
+                # startup error naming the variable, never a raw traceback (Task 6,
+                # trap 3). `role` is `vocabulary.ROLE_ADMIN`, never the literal "ADMIN":
+                # the AD-21 literal check scans seed/ too.
+                try:
+                    admin_password_hash = hash_password(settings.seed_admin_password)
+                except ValueError as too_long:
+                    raise SystemExit(str(too_long)) from too_long
+
+                connection.execute(
+                    pg_insert(Employee)
+                    .values(
+                        department_id=department_id,
+                        manager_id=None,
+                        email=settings.seed_admin_email,
+                        full_name=settings.seed_admin_full_name,
+                        role=vocabulary.ROLE_ADMIN,
+                        joining_date=datetime.date.today(),
+                        is_active=True,
+                        password_hash=admin_password_hash,
+                    )
+                    .on_conflict_do_nothing(index_elements=["email"])
+                )
 
             connection.commit()
 

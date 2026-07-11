@@ -8,9 +8,9 @@ the two indexes the ERD prescribes.
 Runs against real PostgreSQL. Assumes `alembic upgrade head` has already run. Asserts
 against the live database's catalog rather than the model definitions — a model and a
 migration can agree with each other and both be wrong about what shipped; only the
-catalog says what the database actually is. (`alembic check`, which proves the model and
-migration agree, is a separate guarantee, exercised by running it in the suite is out of
-scope here — this file inspects the database.)
+catalog says what the database actually is. The complementary guarantee — that the models
+and the migrations agree with EACH OTHER — is `alembic check`, run by
+`test_model_migration_agreement.py`; this file deliberately inspects the database instead.
 """
 
 from sqlalchemy import Connection, inspect, text

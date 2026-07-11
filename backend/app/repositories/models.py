@@ -13,8 +13,9 @@ Department), so the Admin seeded here (AC2) needs a Department to belong to. Sto
 adds the Department *endpoints*; the table has to exist before an Admin can be seeded.
 
 These models must stay byte-for-byte faithful to migration `0002` — `alembic check`
-(exercised by the schema test) emits an empty diff only while they agree. Change one,
-change both, in the same commit.
+emits an empty diff only while they agree, and `tests/integration/test_model_migration_agreement.py`
+runs that check in the suite so a drift fails the build. Change one, change both, in the
+same commit.
 """
 
 import datetime

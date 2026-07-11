@@ -64,8 +64,10 @@ export function App() {
     return (
       <LoginPage
         onAuthenticated={(issued) => {
-          setToken(issued) // persist to localStorage (survives reload)
-          setSessionToken(issued) // flip this render to the shell
+          setSessionToken(issued) // flip this render to the shell FIRST — so that a
+          setToken(issued) // denied/quota-exceeded persist (guarded, best-effort) can
+          // never strand a successful login on the form. Reload persistence is the only
+          // thing lost if the write fails; the session still works for this page load.
         }}
       />
     )

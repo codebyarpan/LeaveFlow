@@ -51,8 +51,16 @@ def authenticate(email: str, password: str) -> Employee:
     Refuses identically for an unknown email, a wrong password and a deactivated
     Employee (AC4, AC5, AC7). Opens one connection for the command (AD-3); the read is
     the whole of the work, but this is the transaction idiom the write commands copy.
+
+    `expire_on_commit=False` is set so the returned `Employee` stays usable after the
+    `with` block closes — `issue_token` reads `.id`/`.role` on it once the session is
+    gone. It works today without the flag (a read never commits, so nothing expires), but
+    the write commands that COPY this idiom WILL commit, and the default
+    `expire_on_commit=True` would then expire those attributes and raise
+    `DetachedInstanceError` on the caller's next access. Setting it here makes the copied
+    pattern commit-safe by construction rather than leaving a trap for the first writer.
     """
-    with Session(get_engine()) as session:
+    with Session(get_engine(), expire_on_commit=False) as session:
         found = employee_repo.get_by_email(session, email)
 
         # AC5: one bcrypt comparison runs on EVERY path. On the unknown-email path it
