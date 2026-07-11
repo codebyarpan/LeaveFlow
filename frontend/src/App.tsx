@@ -4,16 +4,17 @@
  * Implements: AC8 (a usable shell), AC10 (an unauthenticated visitor sees the login
  * screen; a successful login stores the token and lands them on the shell), NFR-18.
  *
- * The gate is deliberately minimal for Story 1.2: the presence of a stored token decides
- * which surface renders. There is no router — the spine defers that choice, and this
- * story does not force it. Story 1.3 makes the token *mean* something on every request
- * (the Bearer header) and clears it on a 401; here it is only the switch between the
- * login screen and the shell.
+ * The gate is deliberately minimal: the presence of a stored token decides which surface
+ * renders. There is no router — the spine defers that choice, and this story does not
+ * force it. Story 1.3 makes the token *mean* something on every request (the Bearer
+ * header, attached in `api/client.ts`) and signs the visitor out when the server rejects
+ * it: `apiFetch` clears the token and dispatches `SESSION_EXPIRED_EVENT`, and the effect
+ * below turns that into the state flip that returns them to the login screen.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
-import { useHealth } from './api'
-import { getToken, setToken } from './api/session'
+import { ME_QUERY_KEY, queryClient, useHealth, useMe } from './api'
+import { getToken, SESSION_EXPIRED_EVENT, setToken } from './api/session'
 import { LoginPage } from './features/auth/LoginPage'
 
 function HealthIndicator() {
@@ -26,6 +27,21 @@ function HealthIndicator() {
 }
 
 function AppShell() {
+  // A `/me`-backed request: it proves the Bearer header is carried (AC6). If the token is
+  // rejected, `apiFetch` has already cleared it and dispatched the sign-out event, so this
+  // query erroring is the visible edge of the same flow — not something to handle here.
+  const { data, isPending } = useMe()
+
+  // Prefer the data whenever we have it: a background refetch that fails (e.g. a 502 while
+  // the api restarts) leaves `isError` true while `data` still holds the last-good profile,
+  // so checking `data` before `isError` keeps the name on screen instead of blanking it to
+  // "profile unavailable". That message is reserved for an error with nothing cached.
+  const identity = data
+    ? `${data.full_name} · ${data.role} · ${data.department.name}`
+    : isPending
+      ? 'loading your profile…'
+      : 'profile unavailable'
+
   return (
     <div className="shell">
       <header className="shell__header">
@@ -36,14 +52,15 @@ function AppShell() {
       <main className="shell__main">
         <section className="panel">
           <h2>Signed in</h2>
+          <p className="muted">{identity}</p>
           <p>
             You are authenticated. The per-role surfaces — a dashboard, the request
             lifecycle, the team calendar — arrive across Epics 2 and 3; this shell is
             what they render into.
           </p>
           <p className="muted">
-            The session is a Bearer token held in the browser. Story 1.3 attaches it to
-            every request and signs you out when the server rejects it.
+            The session is a Bearer token held in the browser. It is attached to every
+            request, and the server signs you out when it rejects one.
           </p>
         </section>
       </main>
@@ -60,10 +77,31 @@ export function App() {
   // is what makes the switch reactive: storing the token alone would not re-render.
   const [token, setSessionToken] = useState<string | null>(() => getToken())
 
+  // Drive the sign-out (Trap 6). `apiFetch` clears the stored token on a 401 TOKEN_INVALID
+  // and dispatches this event; clearing storage alone does not re-render, because `token`
+  // above still holds the value. Flipping it to `null` here is what returns the visitor to
+  // the login screen. The listener is decoupled by design — `client.ts` never imports
+  // `App`, so there is no cycle. Cleaned up on unmount.
+  useEffect(() => {
+    const onSessionExpired = () => {
+      setSessionToken(null)
+      // Drop the profile cache with the session. `['me']` carries no per-user identity, so
+      // a stale entry left here would be served to the NEXT user who signs in on this same
+      // browser (within `staleTime`) before any refetch — the previous user's name, role
+      // and department. Clearing it on sign-out closes that window.
+      queryClient.removeQueries({ queryKey: ME_QUERY_KEY })
+    }
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
+  }, [])
+
   if (token === null) {
     return (
       <LoginPage
         onAuthenticated={(issued) => {
+          // Drop any prior user's profile before the shell mounts, so a fresh login on a
+          // shared browser fetches its own `/me` rather than reading a cached predecessor.
+          queryClient.removeQueries({ queryKey: ME_QUERY_KEY })
           setSessionToken(issued) // flip this render to the shell FIRST — so that a
           setToken(issued) // denied/quota-exceeded persist (guarded, best-effort) can
           // never strand a successful login on the form. Reload persistence is the only

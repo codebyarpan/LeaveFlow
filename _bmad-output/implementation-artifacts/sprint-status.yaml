@@ -125,7 +125,7 @@ development_status:
   epic-1: in-progress
   1-1-project-foundation-and-reproducible-setup: done
   1-2-log-in-and-receive-a-session: review
-  1-3-carry-the-session-on-every-request: backlog
+  1-3-carry-the-session-on-every-request: review
   1-4-authorization-primitives-the-role-gate-scoped-reads-and-the-404-convention: backlog
   1-5-manage-departments: backlog
   1-6-manage-employees-and-reporting-lines: backlog

@@ -8,9 +8,20 @@
  * weekday or a Company Holiday. Every leave-day count comes from the server, via the
  * preview endpoint. The client is not permitted a second opinion.
  */
+import { clearToken, getToken, SESSION_EXPIRED_EVENT } from './session'
 
 /** The base path every LeaveFlow endpoint is served under. */
 export const API_BASE_PATH = '/api/v1'
+
+/**
+ * The one wire value the frontend matches against the server envelope's `code`.
+ *
+ * The backend declares it once in `domain/vocabulary.py` (AD-21); there is no shared
+ * constants module across the wire, so the frontend restates it — but in exactly one
+ * place, so the "clear the session" decision has a single home. Story 1.3 Dev Notes,
+ * Trap 5: a login failure is `401 AUTH_FAILED`, NOT this, and must not sign the user out.
+ */
+const TOKEN_INVALID_CODE = 'TOKEN_INVALID'
 
 /**
  * The body of every non-2xx response (api-contracts §2).
@@ -93,6 +104,15 @@ export async function apiFetch<T>(path: `/${string}`, init?: RequestInit): Promi
   // would silently drop a caller's Authorization header.
   const headers = new Headers(init?.headers)
 
+  // Carry the session on every request (AC6, AD-14). `!headers.has(...)` so a
+  // caller who set their own Authorization header — there is none today — is never
+  // clobbered. A `null` token (signed out) attaches nothing; the request goes out
+  // bare and the server answers 401 TOKEN_INVALID, which is exactly right.
+  const token = getToken()
+  if (token !== null && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
   // Content-Type is set only when there is a body to describe, and never over a
   // caller's choice. In particular a `FormData` body must NOT be labelled JSON —
   // the browser sets `multipart/form-data` with its boundary, and overriding it
@@ -125,6 +145,17 @@ export async function apiFetch<T>(path: `/${string}`, init?: RequestInit): Promi
       }
     } catch {
       // Body was absent or not JSON. Keep the synthesized envelope above.
+    }
+
+    // The server rejected the stored token (AC6). Clear it and signal `App` to return to
+    // the login screen. Gated on the CODE, not just the status (Trap 5): a wrong-password
+    // login is `401 AUTH_FAILED` and must NOT clear a session or sign anyone out — there
+    // is no session at login anyway. `clearToken` alone would not re-render `App` (its
+    // `token` state still holds the value), so the event is what actually drives the
+    // sign-out; `App` subscribes to it and flips its state.
+    if (response.status === 401 && envelope.code === TOKEN_INVALID_CODE) {
+      clearToken()
+      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT))
     }
 
     throw new ApiError(response.status, envelope)

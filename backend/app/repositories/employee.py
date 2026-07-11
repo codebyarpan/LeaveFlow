@@ -13,8 +13,10 @@ rule does not — cannot — apply to it. Later getters that run under an authen
 session take the actor; this one never will.
 """
 
+import uuid
+
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.repositories.models import Employee
 
@@ -30,3 +32,36 @@ def get_by_email(session: Session, email: str) -> Employee | None:
     which is exactly what AC5 forbids.
     """
     return session.scalars(select(Employee).where(Employee.email == email)).first()
+
+
+def get_by_id_with_department(
+    session: Session, employee_id: uuid.UUID
+) -> Employee | None:
+    """Return the Employee with this id, with `department` eager-loaded, or `None`.
+
+    Implements: FR-17 (`GET /me` reads the caller's own profile), AD-14 (the actor is
+    resolved from the database by the token's subject). Keyed by the primary key, so at
+    most one row matches. `None` means no such row — the *service* decides what that
+    means (a `TOKEN_INVALID` that discloses nothing), exactly as `get_by_email` leaves
+    the missing-row meaning to the login service.
+
+    `joinedload(Employee.department)` loads the department in the same query, so a
+    consumer can read `employee.department` after the session closes. Without it, `/me`'s
+    projection of `department` would trigger a lazy load on a detached instance and raise
+    `DetachedInstanceError` — `expire_on_commit=False` preserves *loaded* attributes but
+    does not load a lazy relationship after close. `/me` is this getter's only consumer
+    and always needs the department, so the eager load is baked in rather than left to
+    each caller to remember.
+
+    --- Why this getter is exempt from Story 1.4's scoped-getter rule ---
+
+    Like `get_by_email`, this resolves *the actor themself* from the token's subject, not
+    another Employee's data. It runs to establish who the caller is, before any scope
+    exists to apply — so Story 1.4's rule that a getter takes the acting Employee and
+    scopes its read does not, cannot, wrap this one. Story 1.4/1.7 must not.
+    """
+    return session.scalars(
+        select(Employee)
+        .options(joinedload(Employee.department))
+        .where(Employee.id == employee_id)
+    ).first()
