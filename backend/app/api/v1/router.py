@@ -9,10 +9,11 @@ so that the set of v1 routes is one readable list rather than a scatter of
 
 from fastapi import APIRouter
 
-from app.api.v1 import auth, departments, health, me
+from app.api.v1 import auth, departments, employees, health, me
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(health.router)
 api_v1_router.include_router(auth.router)
 api_v1_router.include_router(me.router)
 api_v1_router.include_router(departments.router)
+api_v1_router.include_router(employees.router)

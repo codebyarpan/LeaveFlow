@@ -21,4 +21,17 @@ export {
   useRenameDepartment,
 } from './departments'
 export type { Department, Page } from './departments'
+export {
+  EMPLOYEES_QUERY_KEY,
+  useCreateEmployee,
+  useDeactivateEmployee,
+  useEmployees,
+  useUpdateEmployee,
+} from './employees'
+export type {
+  CreateEmployeeInput,
+  Employee,
+  EmployeeDepartment,
+  UpdateEmployeeInput,
+} from './employees'
 export { queryClient } from './queryClient'

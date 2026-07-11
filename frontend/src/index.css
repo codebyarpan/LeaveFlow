@@ -297,3 +297,130 @@ body {
   font-size: 0.875rem;
   flex-basis: 100%;
 }
+
+/*
+ * The Employees screen (Story 1.6, AC13). Admin-only, and the most field-dense screen in
+ * Epic 1: create and edit each carry seven fields, so the form is a responsive grid rather
+ * than the single-input row Departments used. Same plain-CSS, same variables — no component
+ * library, per the spine's deferral.
+ */
+.emp-create,
+.emp-edit {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.375rem;
+  background: #fbfcfd;
+}
+
+.emp-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.75rem;
+}
+
+.emp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.emp-field input,
+.emp-field select {
+  font: inherit;
+  font-weight: 400;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--line);
+  border-radius: 0.375rem;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.emp-field input:focus-visible,
+.emp-field select:focus-visible {
+  outline: 2px solid var(--up);
+  outline-offset: 1px;
+}
+
+.emp-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+
+.emp-form-actions button,
+.emp-actions button {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.375rem;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.emp-form-actions button:disabled,
+.emp-actions button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.emp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.emp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.emp-row:first-child {
+  border-top: none;
+}
+
+.emp-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.emp-name {
+  font-weight: 500;
+}
+
+.emp-inactive {
+  color: var(--down);
+  font-weight: 400;
+  font-size: 0.875rem;
+}
+
+.emp-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.emp-error {
+  margin: 0.375rem 0 0;
+  color: var(--down);
+  font-size: 0.875rem;
+  flex-basis: 100%;
+}
+
+/* The edit form spans the full row width when a row is open for editing. */
+.emp-row .emp-edit {
+  flex-basis: 100%;
+}

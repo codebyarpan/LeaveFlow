@@ -22,6 +22,15 @@ What arrives, and where:
 - Story 1.5 (here) — the error code `DEPARTMENT_NOT_EMPTY` (→ 409): a `DELETE` of a
   Department that still has assigned Employees is refused, naming the obstruction rather
   than letting the FK RESTRICT surface as a bare 500 (`FR-05`, `AD-5`).
+- Story 1.6 (here) — the three Employee-management refusals: `EMAIL_ALREADY_IN_USE`
+  (→ 409), the service gate over `UNIQUE (email)` on create/update (`G2`, `AD-5`);
+  `REPORTING_CYCLE` (→ 400), the acyclic-graph gate over `CHECK (id <> manager_id)` on a
+  manager assignment (`AD-23`, `G7`); and `EMPLOYEE_HAS_DIRECT_REPORTS` (→ 409), the
+  refusal to deactivate or demote below `MANAGER` while an active Employee reports to them
+  (`AD-22`, `G8`). `EMPLOYEE_HAS_PENDING_REQUESTS` is deliberately NOT declared here: its
+  only raise site is Epic 2's Leave Request submission story, which creates the
+  `leave_request` table — and the codebase's discipline is to declare a code *with* its
+  raise site, so it lands there, when the table it queries exists.
 - Story 2.1 — the Leave Type codes, as seeded *data*, not as constants here.
   `SM-5` requires a fourth Leave Type to be addable with no code change; a constant
   in this module would be exactly the code change it forbids.
@@ -66,6 +75,18 @@ RESOURCE_NOT_FOUND = "RESOURCE_NOT_FOUND"
 # client as the FK RESTRICT's bare 500. Wired to 409 in `main.py`.
 DEPARTMENT_NOT_EMPTY = "DEPARTMENT_NOT_EMPTY"
 
+# Employee-management codes (Story 1.6, api-contracts §2). Each is a SERVICE gate that
+# raises before the write, so the underlying database constraint (`UNIQUE (email)`,
+# `CHECK (id <> manager_id)`) is only the AD-5 backstop and never the surfaced 500.
+# `EMAIL_ALREADY_IN_USE` → 409 (a duplicate email on create/update, `G2`);
+# `REPORTING_CYCLE` → 400 (a manager assignment that would close a cycle, `AD-23`/`G7`);
+# `EMPLOYEE_HAS_DIRECT_REPORTS` → 409 (deactivation or demotion-below-`MANAGER` while an
+# active Employee reports to them, `AD-22`/`G8`). All three wire to their statuses in
+# `main.py`. `EMPLOYEE_HAS_PENDING_REQUESTS` is NOT here — see the docstring above.
+EMAIL_ALREADY_IN_USE = "EMAIL_ALREADY_IN_USE"
+REPORTING_CYCLE = "REPORTING_CYCLE"
+EMPLOYEE_HAS_DIRECT_REPORTS = "EMPLOYEE_HAS_DIRECT_REPORTS"
+
 __all__ = [
     "ROLE_EMPLOYEE",
     "ROLE_MANAGER",
@@ -75,4 +96,7 @@ __all__ = [
     "ACTION_NOT_PERMITTED",
     "RESOURCE_NOT_FOUND",
     "DEPARTMENT_NOT_EMPTY",
+    "EMAIL_ALREADY_IN_USE",
+    "REPORTING_CYCLE",
+    "EMPLOYEE_HAS_DIRECT_REPORTS",
 ]

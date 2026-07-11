@@ -58,5 +58,13 @@ CODE_TO_STATUS.update(
         # Story 1.5 — a non-empty Department cannot be deleted. The service counts first
         # and raises this typed refusal; the FK RESTRICT is only the backstop (AD-5).
         vocabulary.DEPARTMENT_NOT_EMPTY: 409,
+        # Story 1.6 — the three Employee-management refusals. Each is a service gate that
+        # raises before the write, so the database constraint behind it stays a backstop
+        # (AD-5): 409 for a duplicate email (G2), 400 for a manager assignment that would
+        # close a reporting cycle (AD-23/G7), 409 for deactivating or demoting below
+        # MANAGER an Employee who still has active direct reports (AD-22/G8).
+        vocabulary.EMAIL_ALREADY_IN_USE: 409,
+        vocabulary.REPORTING_CYCLE: 400,
+        vocabulary.EMPLOYEE_HAS_DIRECT_REPORTS: 409,
     }
 )
