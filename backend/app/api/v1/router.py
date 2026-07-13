@@ -12,6 +12,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     auth,
     balances,
+    cancellation_requests,
     departments,
     employees,
     health,
@@ -31,3 +32,4 @@ api_v1_router.include_router(leave_types.router)
 api_v1_router.include_router(holidays.router)
 api_v1_router.include_router(balances.router)
 api_v1_router.include_router(leave_requests.router)
+api_v1_router.include_router(cancellation_requests.router)

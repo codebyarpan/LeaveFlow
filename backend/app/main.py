@@ -101,5 +101,11 @@ CODE_TO_STATUS.update(
         # overwrite, no balance move, no audit row. `details` is empty (a state conflict names no
         # numbers).
         vocabulary.TRANSITION_NOT_ALLOWED: 409,
+        # Story 2.8 — a Cancellation Request filed against an Approved request whose dates have
+        # already passed (`end_date < today`, the same predicate PAST_DATE_RANGE uses). 400, a
+        # service gate raised before any write (DR-14). ACTION_NOT_PERMITTED (403),
+        # RESOURCE_NOT_FOUND (404) and TRANSITION_NOT_ALLOWED (409) — the other refusals this
+        # story surfaces — are already wired above and are NOT redeclared.
+        vocabulary.LEAVE_ALREADY_TAKEN: 400,
     }
 )

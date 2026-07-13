@@ -102,6 +102,20 @@ _SCOPE_REGISTRY: dict[tuple[str, str], frozenset[Scope]] = {
     ("POST", "/api/v1/leave-requests/{request_id}/approve"): frozenset({Scope.REPORTS}),
     ("POST", "/api/v1/leave-requests/{request_id}/reject"): frozenset({Scope.REPORTS}),
     ("POST", "/api/v1/leave-requests/{request_id}/cancel"): frozenset({Scope.SELF}),
+    # Story 2.8 — the three Cancellation Request identifier endpoints (api-contracts §4.6). The
+    # applicant raises against their OWN Approved leave (role any / scope `self`); the Admin decides
+    # (role Admin / scope `all` — NOT `reports`: a Cancellation Request is Admin-decided, unlike a
+    # Leave Request's approve). (`GET /cancellation-requests` carries no path parameter → out of the
+    # matrix, like `GET /leave-requests`.)
+    ("POST", "/api/v1/leave-requests/{request_id}/cancellation-requests"): frozenset(
+        {Scope.SELF}
+    ),
+    ("POST", "/api/v1/cancellation-requests/{cancellation_request_id}/approve"): frozenset(
+        {Scope.ALL}
+    ),
+    ("POST", "/api/v1/cancellation-requests/{cancellation_request_id}/reject"): frozenset(
+        {Scope.ALL}
+    ),
 }
 
 

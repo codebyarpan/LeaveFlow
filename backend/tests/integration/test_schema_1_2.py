@@ -42,6 +42,8 @@ def test_exactly_the_expected_tables_exist(db_connection: Connection) -> None:
         "leave_balance",
         "leave_request",
         "audit_entry",
+        # Story 2.8 — the approved-leave cancellation object (AD-13, not a fifth LR status).
+        "cancellation_request",
     }
 
 

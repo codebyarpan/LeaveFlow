@@ -1,5 +1,5 @@
 # generated: 2026-07-10
-# last_updated: 2026-07-13  # story 2-6 -> done (code review: 3 patches applied incl. missing-balance 500->404 guard, 3 deferred, 3 dismissed)
+# last_updated: 2026-07-13  # story 2-8 review -> done (code review: 2 decision-needed both resolved as patch & applied [approve-time is_wholly_past re-check -> 400 LEAVE_ALREADY_TAKEN; raise-time concurrent-PENDING guard via new pending_exists_for_leave_request -> 409], 2 deferred [list pagination page-1-only app-wide pattern; end_date==today + Manager/Admin API self-raise coverage], 7 dismissed; obsolete two-concurrent-CR race test replaced by 3 new tests; backend pytest 390 passed, import-linter 7/7 kept)
 # project: LeaveFlow
 # project_key: NOKEY
 # tracking_system: file-system
@@ -146,6 +146,7 @@ last_updated: 2026-07-13  # story 2-7 review -> done (code review: 5 patches app
 # story 2-6 created 2026-07-13: backlog -> ready-for-dev (full write slice: 0006 migration creates leave_request + audit_entry tables; five new refusal codes (INVALID_DATE_RANGE/PAST_DATE_RANGE/SPANS_TWO_LEAVE_YEARS/ZERO_LEAVE_DAYS 400 + EMPLOYEE_HAS_PENDING_REQUESTS 409) + 4 status constants + audit vocab; one-transaction submit command reusing count_leave_days + balances.reserve/consume_direct under lock, one audit_entry same txn, AD-18 leave_days frozen; managerless auto-APPROVE via consume_direct; SM-1 concurrent double-submit test on real PostgreSQL; makes 1.6 EMPLOYEE_HAS_PENDING_REQUESTS guard executable in deactivate_employee; frontend submit slice. Open decision: AD-9 audit grants (single Postgres role -> code-layer append-only recommended))
 # story 2-6 moved ready-for-dev -> in-progress -> review 2026-07-13 (0006 leave_request + audit_entry; 4 status constants + 5 codes + audit vocab; one-transaction submit reusing count_leave_days + reserve/consume_direct under lock, one audit_entry same txn, AD-18 freeze; managerless auto-APPROVE via consume_direct; POST /leave-requests; EMPLOYEE_HAS_PENDING_REQUESTS guard executable in deactivate_employee; SM-1 concurrent double-submit on real PostgreSQL; frontend submission slice w/ immediate Available update + refusal-details. AD-9 realized code-layer append-only (single Postgres role); REASON_SUBMITTED coined; PAST_DATE_RANGE = end<today. backend pytest 332 passed; frontend build+lint clean)
 # story 2-7 created 2026-07-13: backlog -> ready-for-dev (transitions half of the lifecycle: approve/reject/cancel as AD-4 guarded conditional UPDATEs w/ 409 TRANSITION_NOT_ALLOWED; consume_reserved/release_reserved; one audit_entry per transition; the two FR-03-scoped reads GET /leave-requests + /<id> w/ status filter + pagination; role gate -> Admin 403, non-report Manager byte-identical 404 = SM-3 SATISFIED; DR-12 decision-time authority; Manager queue frontend. NO migration/model change. Open: transition reason constants, response shape incl Leave Type/applicant, revise 2.6 append-only surface test)
+# story 2-8 created 2026-07-13: backlog -> ready-for-dev (approved-leave cancellation via NEW cancellation_request table [0007 migration + model, AD-13 not a fifth status]: applicant raises against own future Approved req [scope self; past-dated -> 400 LEAVE_ALREADY_TAKEN; LR untouched], Admin decides [scope all, role Admin -> non-Admin 403]. Approve = guarded CR PENDING->APPROVED + guarded LR APPROVED->CANCELLED + release_consumed + two audit rows [subject_type discriminated]; reject = CR PENDING->REJECTED + one audit row, leave untouched. New services/cancellation, repositories/cancellation_request, api/v1/cancellation_requests, employee raise/track panel + Admin queue. Reuses release_consumed [no 9th balance method], transition_status [no new LR mutator], AD-4 pattern, SM-3 harness. Open decisions: CR status constants reuse, non-Approved raise 409, raise-audit Option A, no CR index, response shape, employee-panel EMPLOYEE-role gate [2.7 own-requests gap])
 project: LeaveFlow
 project_key: NOKEY
 tracking_system: file-system
@@ -178,7 +179,7 @@ development_status:
   2-5-see-what-a-request-will-cost-before-committing-to-it: done
   2-6-submit-a-leave-request: done
   2-7-decide-a-request-approve-reject-cancel: done
-  2-8-cancel-approved-leave-through-a-cancellation-request: backlog
+  2-8-cancel-approved-leave-through-a-cancellation-request: done
   2-9-the-audit-trail: backlog
   2-10-the-leave-year-rollover: backlog
   2-11-a-holiday-change-recalculates-and-may-be-refused: backlog

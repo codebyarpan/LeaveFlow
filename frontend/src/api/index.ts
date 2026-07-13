@@ -66,4 +66,12 @@ export type {
   PreviewLeaveInput,
   SubmitLeaveInput,
 } from './leaveRequests'
+export {
+  CANCELLATION_REQUESTS_QUERY_KEY,
+  useApproveCancellationRequest,
+  useCancellationRequests,
+  useRaiseCancellationRequest,
+  useRejectCancellationRequest,
+} from './cancellationRequests'
+export type { CancellationRequest } from './cancellationRequests'
 export { queryClient } from './queryClient'

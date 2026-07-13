@@ -393,3 +393,53 @@ class AuditEntry(Base):
             name="audit_entry_system_actor_null_check",
         ),
     )
+
+
+class CancellationRequest(Base):
+    """A request to cancel an Approved Leave Request — its OWN row, not a status (Story 2.8).
+
+    Implements: AD-13 / DR-14 (a Cancellation Request is an ENTITY with its own
+    `PENDING/APPROVED/REJECTED` lifecycle, targeting one Approved Leave Request via
+    `leave_request_id` — NEVER a fifth `leave_request.status`; that is what makes "Approved, with
+    a cancellation pending" representable). The applicant raises one against their own future-dated
+    Approved request; an Admin decides it. An approved Cancellation Request moves the target Leave
+    Request to `CANCELLED` and returns its days via `release_consumed` (BR-05); a rejected one
+    changes nothing. AD-5 (the `status` CHECK is the BACKSTOP; `services/cancellation.py` is the
+    gate — a CHECK reaching a client is a defect and a 500). AD-11 (`status` IS code — three states
+    handled exhaustively, stored as TEXT with a CHECK). SM-6.
+
+    NO `UNIQUE (leave_request_id)` (ERD §3): a Leave Request may have MULTIPLE Cancellation Requests
+    over time (a rejected one may be followed by another). NO requester column (the requester is
+    `leave_request.employee_id`, FR-09), NO decider column (the deciding Admin is the `actor_id` on
+    the audit row), NO `created_at` (creation order comes from the time-ordered UUIDv7 PK) — exactly
+    like `LeaveRequest` (ERD §2.1). NO index — the ERD §4.4 names none for this table.
+
+    Like every model here, this must stay byte-for-byte faithful to its migration
+    (`0007_cancellation_request`): `alembic check` (run by
+    `tests/integration/test_model_migration_agreement.py`) emits an empty diff only while they
+    agree — the constraint `name` is byte-identical to the migration's.
+    """
+
+    __tablename__ = "cancellation_request"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        # PostgreSQL 18 native built-in — no extension (ERD §4.4), mirroring every table. UUIDv7
+        # is time-ordered, so the PK also carries creation order (why no `created_at`).
+        server_default=text("uuidv7()"),
+    )
+    leave_request_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leave_request.id"), nullable=False
+    )
+    # One of the three PENDING/APPROVED/REJECTED states, stored as TEXT with a CHECK.
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # No requester/decider column, no `created_at`, no index (ERD §2.1, §3, §4.4).
+
+    __table_args__ = (
+        # AD-5 backstop — the service is the gate; name byte-identical to the migration.
+        CheckConstraint(
+            "status IN ('PENDING','APPROVED','REJECTED')",
+            name="cancellation_request_status_check",
+        ),
+    )

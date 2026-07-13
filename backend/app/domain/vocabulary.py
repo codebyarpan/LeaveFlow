@@ -205,6 +205,30 @@ REASON_APPROVED = "APPROVED"
 REASON_REJECTED = "REJECTED"
 REASON_CANCELLED = "CANCELLED"
 
+# Approved-leave-cancellation code (Story 2.8, api-contracts §2). `LEAVE_ALREADY_TAKEN` → 400 is
+# the refusal `raise_cancellation_request` raises when a Cancellation Request is filed against an
+# Approved request whose dates have already passed (`end_date < today` — the SAME `is_wholly_past`
+# predicate `PAST_DATE_RANGE` uses at submission, DR-14): leave already taken cannot be un-taken.
+# A past-date refusal names no numbers, so `details` is empty. Its raise site is
+# `services/cancellation`, so it is declared here WITH that raise site, the same discipline the
+# other refusals followed. Wired to 400 in `main.py`.
+LEAVE_ALREADY_TAKEN = "LEAVE_ALREADY_TAKEN"
+
+# Cancellation Request audit vocabulary (Story 2.8, ERD §3, AD-8/AD-21). A Cancellation Request is
+# its own audit subject, so `SUBJECT_CANCELLATION_REQUEST` is the second `subject_type` value
+# alongside `SUBJECT_LEAVE_REQUEST` (a decision writes one row per subject, discriminated by it —
+# AC9). `REASON_CANCELLATION_REQUESTED` is the `reason` on the `NULL → PENDING` filing row when the
+# raise is audited (Open Decision #3, Option A: every transition writes exactly one audit row, as a
+# submission does — keeping AD-8/SM-4 one-to-one). The CR's own decision transitions reuse
+# `REASON_APPROVED`/`REASON_REJECTED`, and the target Leave Request's `APPROVED → CANCELLED` move
+# reuses `REASON_CANCELLED` (all from 2.7). The three CR STATUS values reuse
+# `STATUS_PENDING`/`STATUS_APPROVED`/`STATUS_REJECTED` (Open Decision #1: identical strings, and
+# AD-21 declares each string once — the `subject_type` discriminates which entity a status belongs
+# to; the `cancellation_request` CHECK DDL is the only exempt copy, like `leave_request`). These
+# map to no HTTP status, so `CODE_TO_STATUS` is untouched.
+SUBJECT_CANCELLATION_REQUEST = "CANCELLATION_REQUEST"
+REASON_CANCELLATION_REQUESTED = "CANCELLATION_REQUESTED"
+
 # Transition-conflict code (Story 2.7, api-contracts §2). `TRANSITION_NOT_ALLOWED` → 409 is the
 # refusal a guarded conditional `UPDATE … WHERE status = :from` raises when it matches ZERO rows:
 # the request is no longer in the state the transition requires — someone committed a competing
@@ -252,4 +276,7 @@ __all__ = [
     "REASON_REJECTED",
     "REASON_CANCELLED",
     "TRANSITION_NOT_ALLOWED",
+    "LEAVE_ALREADY_TAKEN",
+    "SUBJECT_CANCELLATION_REQUEST",
+    "REASON_CANCELLATION_REQUESTED",
 ]

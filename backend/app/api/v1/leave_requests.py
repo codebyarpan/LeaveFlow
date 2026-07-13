@@ -41,9 +41,14 @@ import uuid
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, model_validator
 
+from app.api.v1.cancellation_requests import (
+    CancellationRequestResponse,
+    to_cancellation_request_response,
+)
 from app.api.v1.dependencies import Actor, get_current_employee, require_role
 from app.api.v1.pagination import Page, PageParams
 from app.services import authorization as authz
+from app.services import cancellation as cancellation_service
 from app.services import leave_requests as leave_requests_service
 
 router = APIRouter()
@@ -413,3 +418,27 @@ def get_leave_request(
     """
     view = leave_requests_service.get_leave_request(caller, request_id)
     return _to_leave_request_response(view)
+
+
+@router.post(
+    "/leave-requests/{request_id}/cancellation-requests",
+    status_code=status.HTTP_201_CREATED,
+    tags=["cancellation-requests"],
+)
+def raise_cancellation_request(
+    request_id: uuid.UUID,
+    caller: Actor = Depends(get_current_employee),
+) -> CancellationRequestResponse:
+    """Raise a Cancellation Request against one's OWN Approved request (Story 2.8, AC2–AC4).
+
+    `get_current_employee`, NOT `require_role`: scope `self` is intrinsic to the applicant (an
+    Employee raises against their OWN Approved leave — api-contracts §4.6, role any). No/invalid
+    token is `401 TOKEN_INVALID`. A non-owner's target is out of scope → byte-identical `404`; a
+    past-dated target → `400 LEAVE_ALREADY_TAKEN`; a non-`APPROVED` target → `409
+    TRANSITION_NOT_ALLOWED` (a Pending request is cancelled via `/cancel`, not here). On success the
+    response is `201` with the created `PENDING` Cancellation Request. This route lives on the
+    leave-requests router because it is under the `/leave-requests/{id}` path; the other three
+    Cancellation Request routes are on `cancellation_requests.router`.
+    """
+    view = cancellation_service.raise_cancellation_request(caller, request_id)
+    return to_cancellation_request_response(view)

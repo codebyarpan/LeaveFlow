@@ -15,8 +15,9 @@ from sqlalchemy import Connection, text
 
 # The current head revision. It moves forward one story at a time; the assertion below
 # keeps its meaning — "the database is stamped at head", not "at some revision or other".
-# Story 2.6 advanced it to `0006_leave_request` (leave_request + audit_entry).
-HEAD_REVISION = "0006_leave_request"
+# Story 2.6 advanced it to `0006_leave_request` (leave_request + audit_entry); Story 2.8 to
+# `0007_cancellation_request` (the cancellation_request table).
+HEAD_REVISION = "0007_cancellation_request"
 
 
 def _public_tables(db_connection: Connection) -> set[str]:

@@ -20,7 +20,9 @@ import { DashboardPage } from './features/dashboard/DashboardPage'
 import { DepartmentsPage } from './features/departments/DepartmentsPage'
 import { EmployeesPage } from './features/employees/EmployeesPage'
 import { HolidaysPage } from './features/holidays/HolidaysPage'
+import { CancellationRequestsPanel } from './features/leave/CancellationRequestsPanel'
 import { ManagerQueuePanel } from './features/leave/ManagerQueuePanel'
+import { RequestCancellationPanel } from './features/leave/RequestCancellationPanel'
 import { RequestPreviewPanel } from './features/leave/RequestPreviewPanel'
 import { LeaveTypesPage } from './features/leaveTypes/LeaveTypesPage'
 import { ProfilePage } from './features/profile/ProfilePage'
@@ -89,6 +91,18 @@ function AppShell() {
             After a decision the queue and balances refresh; the server's leave_days is rendered
             as-is (AD-2). */}
         <ManagerQueuePanel />
+
+        {/* Cancel approved leave (Story 2.8): a plain Employee's own APPROVED requests, each
+            offering a cancellation request an Admin then decides. Renders null for a non-Employee
+            (its own useMe gate, Open Decision #6 — a Manager's list is their reports', not their
+            own); the server's self-scoped 404 is the real guard. No client day count (AD-2). */}
+        <RequestCancellationPanel />
+
+        {/* The Admin's Cancellation Requests screen (Story 2.8): every PENDING cancellation
+            request, each approvable/rejectable — the Admin's only route to one (none is announced
+            by notification or dashboard). Renders null for a non-Admin (its own useMe gate); the
+            server's 403 (require_role ADMIN) is the real guard. No client day count (AD-2). */}
+        <CancellationRequestsPanel />
 
         {/* Self-service: renders for every authenticated user (Role "any"). The Full Name
             is editable here; every other field is read-only, and the server is the guard. */}
