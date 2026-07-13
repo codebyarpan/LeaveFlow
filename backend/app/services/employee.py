@@ -160,9 +160,12 @@ def create_employee(
          would 500; a named-but-absent manager is `not_found()` (404, Trap 2). The cycle
          walk is vacuous on create (the new row has no id, so nothing can reach it).
       3. Hash the password once (Trap 5); it is stored, never echoed.
-      4. Insert `is_active=True` and `flush` for the id.
-      5. Commit under `try/except IntegrityError` → re-raise `EMAIL_ALREADY_IN_USE`, the
-         `UNIQUE (email)` TOCTOU backstop (`AD-5`, mirrors `delete_department`).
+      4. Insert `is_active=True` and `flush` for the id — INSIDE the `try`: the repo's
+         `flush()` emits the INSERT, so a concurrent duplicate email raises the
+         `IntegrityError` there, not at commit. Wrapping only `commit()` would let that raw
+         500 escape (the pre-check hides it in every non-concurrent test).
+      5. Commit; a `UNIQUE (email)` `IntegrityError` from the flush OR the commit re-raises
+         `EMAIL_ALREADY_IN_USE`, the TOCTOU backstop (`AD-5`).
 
     Returns the row (reloaded with `department` eager-loaded) so the route can project it.
     """
@@ -184,24 +187,25 @@ def create_employee(
             authz.not_found()
 
         password_hash = security.hash_password(initial_password)
-        created = employee_repo.create_employee(
-            session,
-            department_id=department_id,
-            manager_id=manager_id,
-            email=email,
-            full_name=full_name,
-            role=role,
-            joining_date=joining_date,
-            password_hash=password_hash,
-        )
         try:
+            created = employee_repo.create_employee(
+                session,
+                department_id=department_id,
+                manager_id=manager_id,
+                email=email,
+                full_name=full_name,
+                role=role,
+                joining_date=joining_date,
+                password_hash=password_hash,
+            )
             session.commit()
         except IntegrityError as exc:
             session.rollback()
             # The UNIQUE (email) TOCTOU backstop re-raises the typed 409 ONLY for a genuine
             # email collision (a concurrent insert of the same address between the pre-check
-            # and the commit). Any other IntegrityError is re-raised untouched rather than
-            # mislabeled as a duplicate email.
+            # and the commit). The repo's flush() emits the INSERT, so the create must sit
+            # INSIDE this try alongside commit() — otherwise the collision surfaces as a raw
+            # 500. Any other IntegrityError is re-raised untouched rather than mislabeled.
             if _email_conflicts(session, email):
                 raise _email_already_in_use() from exc
             raise

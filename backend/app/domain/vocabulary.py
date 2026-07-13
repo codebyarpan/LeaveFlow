@@ -105,6 +105,14 @@ FORBIDDEN_FIELD = "FORBIDDEN_FIELD"
 # envelope (NFR-17) instead of leaking a bare Pydantic 422 or a NOT NULL 500. Wired in `main.py`.
 INVALID_NAME = "INVALID_NAME"
 
+# Resource-state code (Story 2.1, api-contracts §2). `LEAVE_TYPE_CODE_IN_USE` → 409 is the
+# refusal `POST /leave-types` raises when the `code` already belongs to a Leave Type: the
+# service pre-checks the duplicate and re-raises the `UNIQUE (code)` `IntegrityError` as this
+# typed 409 (AD-5), so the constraint stays a backstop and never surfaces as a raw 500 —
+# mirroring `EMAIL_ALREADY_IN_USE` (Story 1.6). Wired to 409 in `main.py`. EL/CL/FL are
+# seeded DATA, never constants here (AD-11): a fourth Leave Type must add no code (SM-5).
+LEAVE_TYPE_CODE_IN_USE = "LEAVE_TYPE_CODE_IN_USE"
+
 __all__ = [
     "ROLE_EMPLOYEE",
     "ROLE_MANAGER",
@@ -119,4 +127,5 @@ __all__ = [
     "EMPLOYEE_HAS_DIRECT_REPORTS",
     "FORBIDDEN_FIELD",
     "INVALID_NAME",
+    "LEAVE_TYPE_CODE_IN_USE",
 ]

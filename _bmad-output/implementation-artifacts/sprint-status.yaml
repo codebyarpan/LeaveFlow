@@ -112,7 +112,7 @@
 # ============================================================================
 
 generated: 2026-07-10
-last_updated: 2026-07-13
+last_updated: 2026-07-13  # + story 2-2 created (backlog -> ready-for-dev)
 # story 1-4 moved ready-for-dev -> in-progress -> review 2026-07-11
 # story 1-4 code review 2026-07-11: 5 patches applied, review -> done
 # story 1-5 created 2026-07-11: backlog -> ready-for-dev
@@ -126,6 +126,11 @@ last_updated: 2026-07-13
 # story 1-8 created 2026-07-13: backlog -> ready-for-dev
 # story 1-8 moved ready-for-dev -> in-progress -> review 2026-07-13
 # story 1-8 code review 2026-07-13: 5 patches applied (incl. new INVALID_NAME code), 2 dismissed, review -> done
+# epic-2 backlog -> in-progress 2026-07-13 (first story created)
+# story 2-1 created 2026-07-13: backlog -> ready-for-dev
+# story 2-1 moved in-progress -> review 2026-07-13 (backend pytest 211 passed; frontend build+lint clean)
+# story 2-1 code review 2026-07-13: 3 patches applied (leave_types + employee flush/commit backstop, AC8 invalid-token test), 2 deferred, 2 dismissed, review -> done
+# story 2-2 created 2026-07-13: backlog -> ready-for-dev
 project: LeaveFlow
 project_key: NOKEY
 tracking_system: file-system
@@ -150,9 +155,9 @@ development_status:
   # Phase 1 (correctness core) · 12 stories · 90 ACs
   # FRs: FR-06, FR-07, FR-08, FR-09, FR-10, FR-16
   # Four of five correctness metrics land here: SM-1, SM-2, SM-4, SM-5.
-  epic-2: backlog
-  2-1-leave-types-as-configuration: backlog
-  2-2-the-company-holiday-calendar: backlog
+  epic-2: in-progress
+  2-1-leave-types-as-configuration: done
+  2-2-the-company-holiday-calendar: ready-for-dev
   2-3-the-leave-day-count-one-implementation-nowhere-else: backlog
   2-4-leave-balances-three-quantities-one-derived: backlog
   2-5-see-what-a-request-will-cost-before-committing-to-it: backlog

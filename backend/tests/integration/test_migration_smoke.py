@@ -15,7 +15,8 @@ from sqlalchemy import Connection, text
 
 # The current head revision. It moves forward one story at a time; the assertion below
 # keeps its meaning — "the database is stamped at head", not "at some revision or other".
-HEAD_REVISION = "0002_department_and_employee"
+# Story 2.1 advanced it to `0003_leave_type`.
+HEAD_REVISION = "0003_leave_type"
 
 
 def _public_tables(db_connection: Connection) -> set[str]:
@@ -39,18 +40,45 @@ def test_alembic_version_exists_and_is_stamped_at_head(db_connection: Connection
     assert versions == [HEAD_REVISION]
 
 
-def test_no_leave_type_row_was_inserted_by_a_migration(db_connection: Connection) -> None:
-    """AD-11: seeding is the seed command's job, never a migration's.
+def test_leave_type_table_shipped_with_its_columns_and_unique_code(
+    db_connection: Connection,
+) -> None:
+    """Story 2.1: `0003` created `leave_type` with its seven columns and `UNIQUE (code)`.
 
-    Vacuous today — `leave_type` does not exist, so a migration cannot have populated
-    it. Asserted here anyway so that the day Story 2.1 creates the table, the
-    assertion is already standing and already watching.
+    This assertion stood vacuously through Story 1.2 as a tripwire — "the day Story 2.1
+    creates the table, the assertion is already standing" — and now that the table exists it
+    is repointed at what it can still prove from the live catalog: the table shipped, with the
+    ERD's seven columns and the `UNIQUE (code)` the whole duplicate-`code` 409 story rests on.
+
+    Its original claim — that no *migration* inserted a Leave Type row — is not a stable
+    DB-runtime fact once the seed legitimately populates the table, so AD-11's row-provenance
+    is enforced where it can be proven unambiguously: statically in
+    `tests/test_migrations_insert_nothing.py` (every migration's AST, `0003` included) for the
+    migration side, and in `tests/integration/test_seed.py` for the seed side.
     """
-    leave_type_exists = db_connection.execute(
-        text("SELECT to_regclass('public.leave_type') IS NOT NULL")
-    ).scalar_one()
+    columns = db_connection.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'leave_type'"
+        )
+    ).scalars().all()
+    assert set(columns) == {
+        "id",
+        "code",
+        "name",
+        "annual_entitlement",
+        "carries_forward",
+        "carry_forward_cap",
+        "requires_supporting_document",
+    }
 
-    assert not leave_type_exists, (
-        "`leave_type` exists before Story 2.1. AD-11 forbids any migration from "
-        "inserting a Leave Type row — the table and its rows arrive via the seed."
+    unique_defs = db_connection.execute(
+        text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'public.leave_type'::regclass AND contype = 'u'"
+        )
+    ).scalars().all()
+    assert any("(code)" in definition for definition in unique_defs), (
+        "leave_type must carry UNIQUE (code) — the AD-5 backstop the duplicate-code 409 "
+        "story depends on"
     )

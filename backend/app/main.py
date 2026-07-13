@@ -72,5 +72,9 @@ CODE_TO_STATUS.update(
         # Story 1.8 code review — PATCH /me refuses an unusable full_name value (null,
         # non-string, empty/whitespace) with 400, keeping the refusal inside the envelope.
         vocabulary.INVALID_NAME: 400,
+        # Story 2.1 — POST /leave-types refuses a duplicate `code` with 409. The service
+        # pre-checks and re-raises the UNIQUE (code) IntegrityError as this typed refusal,
+        # so the constraint stays a backstop (AD-5), mirroring EMAIL_ALREADY_IN_USE.
+        vocabulary.LEAVE_TYPE_CODE_IN_USE: 409,
     }
 )

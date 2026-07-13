@@ -23,14 +23,20 @@ def _public_tables(db_connection: Connection) -> set[str]:
     return {row[0] for row in rows}
 
 
-def test_exactly_department_employee_and_alembic_version_exist(db_connection: Connection) -> None:
-    """AC1: this story's schema is precisely these three tables — no more, no fewer.
+def test_exactly_the_expected_tables_exist(db_connection: Connection) -> None:
+    """The public schema is precisely the tables shipped so far — no more, no fewer.
 
     Exact-set equality, the Story 1.1 pattern: a subset check would pass against a story
-    that also created `leave_request`, and only equality catches the table nobody meant
-    to add.
+    that also created a `leave_request` nobody meant to add, and only equality catches it.
+    The set grows one table per schema story — Story 2.1 added `leave_type` — exactly as
+    `test_migrations_insert_nothing.py`'s ordered revision chain grows one file per story.
     """
-    assert _public_tables(db_connection) == {"alembic_version", "department", "employee"}
+    assert _public_tables(db_connection) == {
+        "alembic_version",
+        "department",
+        "employee",
+        "leave_type",
+    }
 
 
 def test_employee_columns_and_nullability(db_connection: Connection) -> None:

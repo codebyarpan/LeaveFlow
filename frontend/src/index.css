@@ -344,6 +344,22 @@ body {
   outline-offset: 1px;
 }
 
+/* Leave Types (Story 2.1) — a checkbox field, the one control the emp- form vocabulary had
+ * no precedent for. `.emp-field` stacks a label over a full-width input; a checkbox wants the
+ * box beside its text at its natural size, so this reuses the emp- grid cell but lays it out
+ * as a row. Scoped to `.leave-check` so no existing screen is touched. */
+.emp-field.leave-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 400;
+}
+
+.emp-field.leave-check input[type='checkbox'] {
+  width: auto;
+  padding: 0;
+}
+
 .emp-form-actions {
   display: flex;
   align-items: center;

@@ -20,9 +20,46 @@ from app.core.logging import configure_logging
 from app.core.security import hash_password
 from app.core.settings import get_settings
 from app.domain import vocabulary
-from app.repositories.models import Department, Employee
+from app.repositories.models import Department, Employee, LeaveType
 
 logger = logging.getLogger("seed")
+
+# The three Leave Types that ship with LeaveFlow, seeded as DATA (AD-11) — never a
+# migration, never a `vocabulary.py` constant — so SM-5 holds: a fourth Leave Type is added
+# through `POST /leave-types` with no code change and no schema migration. The `code` is the
+# only pinned value (EL/CL/FL, ERD §2). No artifact pins the numeric policy, so these are
+# sensible project defaults, documented as such in the Story 2.1 Completion Notes:
+#   - EL (Earned Leave): 12 days/yr, carries forward, capped at 30 accumulated days.
+#   - CL (Casual Leave): 12 days/yr, does not carry forward (cap is meaningless → NULL).
+#   - FL (Floater Leave): 2 days/yr, does not carry forward (cap NULL).
+# All three seed `requires_supporting_document=False` (spine *Seeding*, PRD §7.3): Story 4.1
+# turns the flag on for a later type, and is safe to arrive last because these seed false.
+_SEED_LEAVE_TYPES: tuple[dict[str, object], ...] = (
+    {
+        "code": "EL",
+        "name": "Earned Leave",
+        "annual_entitlement": 12,
+        "carries_forward": True,
+        "carry_forward_cap": 30,
+        "requires_supporting_document": False,
+    },
+    {
+        "code": "CL",
+        "name": "Casual Leave",
+        "annual_entitlement": 12,
+        "carries_forward": False,
+        "carry_forward_cap": None,
+        "requires_supporting_document": False,
+    },
+    {
+        "code": "FL",
+        "name": "Floater Leave",
+        "annual_entitlement": 2,
+        "carries_forward": False,
+        "carry_forward_cap": None,
+        "requires_supporting_document": False,
+    },
+)
 
 
 def seed() -> None:
@@ -38,11 +75,11 @@ def seed() -> None:
     head` has already run, which is what makes a failure here legible as "you skipped
     command two" rather than surfacing as a missing table.
 
-    What arrives later:
-      - Story 2.1 — the EL, CL and FL Leave Types, each with
-        `requires_supporting_document = false`. AD-11: as data, from here. Never from
-        a migration, and never as constants in `domain/vocabulary.py` — SM-5 requires
-        a fourth Leave Type to be addable with no code change and no schema migration.
+    Story 2.1 adds the EL, CL and FL Leave Types, each with
+    `requires_supporting_document = false` (`_SEED_LEAVE_TYPES`). AD-11: as data, from
+    here — never from a migration, and never as constants in `domain/vocabulary.py`, so
+    SM-5 holds and a fourth Leave Type is addable with no code change and no migration.
+    Each is inserted with `ON CONFLICT (code) DO NOTHING`, so a re-seed changes nothing.
     """
     settings = get_settings()
     engine = create_engine(settings.database_url)
@@ -123,12 +160,25 @@ def seed() -> None:
                     .on_conflict_do_nothing(index_elements=["email"])
                 )
 
+            # Leave Types (Story 2.1): EL/CL/FL as data. `ON CONFLICT (code) DO NOTHING`
+            # against the `UNIQUE (code)` constraint makes each insert idempotent — a
+            # re-seed leaves an existing row exactly as it was, matching the Admin idiom
+            # above. The seed is single-process, so this cannot race with itself.
+            for leave_type in _SEED_LEAVE_TYPES:
+                connection.execute(
+                    pg_insert(LeaveType)
+                    .values(**leave_type)
+                    .on_conflict_do_nothing(index_elements=["code"])
+                )
+
             connection.commit()
 
             logger.info(
-                "Seed complete: one Department (%s) and one Admin (%s) present (AC2).",
+                "Seed complete: one Department (%s), one Admin (%s) and %d Leave Types "
+                "present (AC2, Story 2.1).",
                 settings.seed_department_name,
                 settings.seed_admin_email,
+                len(_SEED_LEAVE_TYPES),
             )
     finally:
         # On every path, including failure — an abandoned pool is a leak the

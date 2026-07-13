@@ -91,3 +91,40 @@ class Employee(Base):
         # AD-23 backstop. Named so the migration and the model agree on it.
         CheckConstraint("id <> manager_id", name="employee_not_own_manager_check"),
     )
+
+
+class LeaveType(Base):
+    """A leave policy expressed as DATA, never an enum (FR-06, AD-11, DR-11, SM-5).
+
+    A Leave Type is a table row, so changing leave policy — adding a fourth type, retuning
+    an entitlement — is configuration, not a code change and not a schema migration (SM-5).
+    It is NEVER a Python `Enum` and NEVER a PostgreSQL `ENUM` (AD-11): the attributes below
+    are read at runtime, and no branch anywhere tests a Leave Type by `code` or `name`. The
+    three seed rows (EL/CL/FL) enter through `python -m seed`, never a migration (AD-11).
+
+    `UNIQUE (code)` is the one constraint departments lacks: the service pre-checks a
+    duplicate `code` and re-raises the `IntegrityError` as a typed `409 LEAVE_TYPE_CODE_IN_USE`
+    (AD-5), so the constraint stays a backstop and never surfaces as a raw 500.
+
+    Like `Department` and `Employee`, this model must stay byte-for-byte faithful to its
+    migration (`0003_leave_type`): `alembic check` emits an empty diff only while they agree,
+    and `tests/integration/test_model_migration_agreement.py` runs that check in the suite.
+    """
+
+    __tablename__ = "leave_type"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        # PostgreSQL 18 native built-in — no extension (ERD §4.4), mirroring `Department`.
+        server_default=text("uuidv7()"),
+    )
+    code: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    # Plain INTEGER — Leave Days for a full year; the base Proration reduces it. Never
+    # NUMERIC, never float (ERD §4.1): a day count is a whole number of days.
+    annual_entitlement: Mapped[int] = mapped_column(nullable=False)
+    carries_forward: Mapped[bool] = mapped_column(nullable=False)
+    # NULLABLE: the maximum carried across the year boundary, meaningless (and null) where
+    # `carries_forward` is false (ERD §6).
+    carry_forward_cap: Mapped[int | None] = mapped_column(nullable=True)
+    requires_supporting_document: Mapped[bool] = mapped_column(nullable=False)

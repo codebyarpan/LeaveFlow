@@ -18,6 +18,7 @@ import { getToken, SESSION_EXPIRED_EVENT, setToken } from './api/session'
 import { LoginPage } from './features/auth/LoginPage'
 import { DepartmentsPage } from './features/departments/DepartmentsPage'
 import { EmployeesPage } from './features/employees/EmployeesPage'
+import { LeaveTypesPage } from './features/leaveTypes/LeaveTypesPage'
 import { ProfilePage } from './features/profile/ProfilePage'
 
 function HealthIndicator() {
@@ -75,6 +76,9 @@ function AppShell() {
         {/* Admin-only: EmployeesPage renders null for a non-Admin (its own useMe gate). The
             real guard is always the server's 403 on every /employees endpoint (AC5). */}
         <EmployeesPage />
+        {/* Any-role list, Admin-only create form (Pattern A, like Departments). The GET is
+            any-role (scope `all`); the server's 403 on POST is the real guard (Story 2.1). */}
+        <LeaveTypesPage />
       </main>
 
       <footer className="shell__footer">

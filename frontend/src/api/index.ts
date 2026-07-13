@@ -34,4 +34,10 @@ export type {
   EmployeeDepartment,
   UpdateEmployeeInput,
 } from './employees'
+export {
+  LEAVE_TYPES_QUERY_KEY,
+  useCreateLeaveType,
+  useLeaveTypes,
+} from './leaveTypes'
+export type { CreateLeaveTypeInput, LeaveType } from './leaveTypes'
 export { queryClient } from './queryClient'

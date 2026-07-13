@@ -121,6 +121,7 @@ def test_the_migration_history_is_the_expected_ordered_chain() -> None:
     assert [p.name for p in _migration_files()] == [
         "0001_baseline_baseline_no_domain_table_ac6_ad_11.py",
         "0002_department_and_employee.py",
+        "0003_leave_type.py",
     ]
 
 

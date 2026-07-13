@@ -57,3 +57,36 @@ def test_running_the_seed_twice_changes_nothing(db_connection: Connection) -> No
 
     assert _count(db_connection, "department", "name", settings.seed_department_name) == 1
     assert _count(db_connection, "employee", "email", settings.seed_admin_email) == 1
+
+
+# --- Story 2.1 (AC2): EL/CL/FL arrive as data, false-documented, idempotently -----------
+
+
+def test_seed_creates_the_three_leave_types_document_free(db_connection: Connection) -> None:
+    """AC2: after the seed, EL/CL/FL exist, each with `requires_supporting_document = false`.
+
+    They enter through the seed command as DATA (AD-11), never a migration — which is what
+    `test_migrations_insert_nothing.py` enforces from the other side.
+    """
+    seed()
+
+    for code in ("EL", "CL", "FL"):
+        row = db_connection.execute(
+            text(
+                "SELECT requires_supporting_document AS needs_doc "
+                "FROM leave_type WHERE code = :code"
+            ),
+            {"code": code},
+        ).one()
+        assert row.needs_doc is False
+
+
+def test_running_the_seed_twice_leaves_one_row_per_leave_type(
+    db_connection: Connection,
+) -> None:
+    """AC2 idempotency: a second seed run inserts no duplicate Leave Type (ON CONFLICT)."""
+    seed()
+    seed()
+
+    for code in ("EL", "CL", "FL"):
+        assert _count(db_connection, "leave_type", "code", code) == 1
