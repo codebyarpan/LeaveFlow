@@ -87,6 +87,24 @@ EMAIL_ALREADY_IN_USE = "EMAIL_ALREADY_IN_USE"
 REPORTING_CYCLE = "REPORTING_CYCLE"
 EMPLOYEE_HAS_DIRECT_REPORTS = "EMPLOYEE_HAS_DIRECT_REPORTS"
 
+# Self-service code (Story 1.8, api-contracts §4.1, `G5`). `FORBIDDEN_FIELD` → 400 is the
+# refusal `PATCH /me` raises when the body carries any field other than `full_name`: the
+# actor is permitted both the endpoint and the resource (their own profile), so the domain
+# refuses the *content* — a 400, not the 403 of "may see, may not act" nor the 404 of a
+# scope miss. It is the last unmapped code in Epic 1. The service gate names the rejected
+# field(s) in `details`; the `422` FastAPI would otherwise emit is suppressed so the
+# envelope holds (NFR-17). Wired to 400 in `main.py`.
+FORBIDDEN_FIELD = "FORBIDDEN_FIELD"
+
+# Self-service code (Story 1.8, code review 2026-07-13). `INVALID_NAME` → 400 is the refusal
+# `PATCH /me` raises when `full_name` is present but its *value* is unusable — `null`, a
+# non-string, or empty/whitespace-only. Distinct from `FORBIDDEN_FIELD` (a rejected *key*):
+# here the key is accepted but the content is refused, still a 400 (the actor owns the
+# resource; the domain refuses the content). Validated in `services/me.py` BEFORE any write,
+# so nothing persists; the check keeps every non-2xx body inside the `{code,message,details}`
+# envelope (NFR-17) instead of leaking a bare Pydantic 422 or a NOT NULL 500. Wired in `main.py`.
+INVALID_NAME = "INVALID_NAME"
+
 __all__ = [
     "ROLE_EMPLOYEE",
     "ROLE_MANAGER",
@@ -99,4 +117,6 @@ __all__ = [
     "EMAIL_ALREADY_IN_USE",
     "REPORTING_CYCLE",
     "EMPLOYEE_HAS_DIRECT_REPORTS",
+    "FORBIDDEN_FIELD",
+    "INVALID_NAME",
 ]

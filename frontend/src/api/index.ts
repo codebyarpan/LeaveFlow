@@ -11,7 +11,7 @@ export type { Credentials, LoginResponse } from './auth'
 export { clearToken, getToken, setToken, SESSION_EXPIRED_EVENT, TOKEN_STORAGE_KEY } from './session'
 export { useHealth } from './health'
 export type { HealthResponse } from './health'
-export { ME_QUERY_KEY, useMe } from './me'
+export { ME_QUERY_KEY, useMe, useUpdateMe } from './me'
 export type { DepartmentBrief, MeResponse } from './me'
 export {
   DEPARTMENTS_QUERY_KEY,

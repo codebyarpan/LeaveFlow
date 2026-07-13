@@ -66,5 +66,11 @@ CODE_TO_STATUS.update(
         vocabulary.EMAIL_ALREADY_IN_USE: 409,
         vocabulary.REPORTING_CYCLE: 400,
         vocabulary.EMPLOYEE_HAS_DIRECT_REPORTS: 409,
+        # Story 1.8 / G5 — PATCH /me refuses any field other than full_name with 400
+        # (the actor owns the resource; the domain refuses the content, not the access).
+        vocabulary.FORBIDDEN_FIELD: 400,
+        # Story 1.8 code review — PATCH /me refuses an unusable full_name value (null,
+        # non-string, empty/whitespace) with 400, keeping the refusal inside the envelope.
+        vocabulary.INVALID_NAME: 400,
     }
 )

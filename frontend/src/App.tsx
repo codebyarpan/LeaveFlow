@@ -18,6 +18,7 @@ import { getToken, SESSION_EXPIRED_EVENT, setToken } from './api/session'
 import { LoginPage } from './features/auth/LoginPage'
 import { DepartmentsPage } from './features/departments/DepartmentsPage'
 import { EmployeesPage } from './features/employees/EmployeesPage'
+import { ProfilePage } from './features/profile/ProfilePage'
 
 function HealthIndicator() {
   const { data, isPending, isError, error } = useHealth()
@@ -65,6 +66,10 @@ function AppShell() {
             request, and the server signs you out when it rejects one.
           </p>
         </section>
+
+        {/* Self-service: renders for every authenticated user (Role "any"). The Full Name
+            is editable here; every other field is read-only, and the server is the guard. */}
+        <ProfilePage />
 
         <DepartmentsPage />
         {/* Admin-only: EmployeesPage renders null for a non-Admin (its own useMe gate). The
