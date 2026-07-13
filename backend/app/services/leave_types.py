@@ -17,14 +17,19 @@ and commits inside it (AD-3) — the idiom `services/departments.py` documents.
 closes, so the `api/` route can project it into the response.
 """
 
+import datetime
+
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain import vocabulary
 from app.domain.errors import DomainError
+from app.domain.proration import prorate_entitlement
+from app.repositories import employee as employee_repo
 from app.repositories import leave_type as leave_type_repo
 from app.repositories.engine import get_engine
 from app.repositories.models import LeaveType
+from app.services import balances
 
 # One message per refusal, stated once at module level — mirrors `services/employee.py`'s
 # `_EMAIL_ALREADY_IN_USE_MESSAGE`. The `details` carry the conflicting `code` so NFR-17's
@@ -87,6 +92,28 @@ def create_leave_type(
                 carry_forward_cap=carry_forward_cap,
                 requires_supporting_document=requires_supporting_document,
             )
+            # Materialize a leave_balance row for the new Leave Type × every Employee, for the
+            # current Leave Year — Story 2.4's create hook. This IS the SM-5 guarantee: a fourth
+            # Leave Type added through the API immediately has a balance every Employee can apply
+            # against — no migration, no code change. Inside this same transaction (AD-3), before
+            # commit, so a materialization failure rolls the create back. Routes through
+            # `balances.set_accrual` only — the sole balance writer (AD-17). Each Employee's
+            # proration reads THEIR joining_date; `carried_forward = 0` (first year for this
+            # type); `entitlement_basis` is the new type's annual_entitlement. The clock lives
+            # here in the shell, never in `domain/` (AD-1).
+            current_year = datetime.date.today().year
+            for employee in employee_repo.all_employees(session):
+                balances.set_accrual(
+                    session,
+                    employee_id=employee.id,
+                    leave_type_id=leave_type.id,
+                    leave_year=current_year,
+                    prorated_entitlement=prorate_entitlement(
+                        leave_type.annual_entitlement, employee.joining_date, current_year
+                    ),
+                    carried_forward=0,
+                    entitlement_basis=leave_type.annual_entitlement,
+                )
             session.commit()
         except IntegrityError as exc:
             session.rollback()

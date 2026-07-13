@@ -125,26 +125,48 @@ def list_employees(
 
 
 def get_employee(
-    session: Session, actor: Employee, employee_id: uuid.UUID
+    session: Session,
+    actor: Employee,
+    employee_id: uuid.UUID,
+    scope: Scope = Scope.ALL,
 ) -> Employee | None:
     """Return one Employee by id, scoped to `actor`, or `None` (AC3, Trap 1).
 
-    Composes `Employee.id == employee_id` with `employee_scope_predicate(Scope.ALL, actor)`
-    — for an Admin the predicate is `true()`, so this is a plain by-id lookup, but it takes
-    the actor and applies a scope so the guardrail's invariant holds. `department` is
-    eager-loaded for the response projection. `None` means no such row *or* out of scope;
-    the service decides what that means (`not_found()` → 404), so the two are
+    Composes `Employee.id == employee_id` with `employee_scope_predicate(scope, actor)`.
+    `scope` defaults to `Scope.ALL` — the Admin-only `/employees/{id}` read (Story 1.6), whose
+    predicate is `true()`, so that call is a plain by-id lookup. Story 2.4's Manager balance
+    endpoint passes `Scope.REPORTS`, so a Manager naming a non-report gets `None` — the "returns
+    None for nonexistent-OR-out-of-scope" the balance service relies on to raise a byte-identical
+    404 (AD-10). The getter still takes the actor and applies a scope predicate either way, so
+    the guardrail's invariant holds. `department` is eager-loaded for the response projection;
+    the service turns a `None` into `not_found()` (404), so nonexistent and out-of-scope are
     indistinguishable to a client (AD-10).
     """
     return (
         session.scalars(
             select(Employee)
             .options(joinedload(Employee.department))
-            .where(Employee.id == employee_id, employee_scope_predicate(Scope.ALL, actor))
+            .where(Employee.id == employee_id, employee_scope_predicate(scope, actor))
         )
         .unique()
         .first()
     )
+
+
+# --- Story 2.4: the materialization full-table read (AD-17 create hook) -----------------
+
+
+def all_employees(session: Session) -> list[Employee]:
+    """Return EVERY Employee, unpaginated, for Story 2.4's balance materialization.
+
+    A write-path full-table read: `create_leave_type` materializes a `leave_balance` row for the
+    new Leave Type × every Employee (AC3/SM-5), which needs all of them, not a page. Named
+    `all_`, NOT `list_`/`get_`, precisely so it is correctly not a scoped-getter candidate — it
+    feeds a materialization loop inside an Admin command (the Admin's scope is everyone anyway),
+    not a read projection that could leak another Employee's data through an endpoint. Ordered by
+    `id` so the materialization is deterministic (AD-3's ascending lock order for balance rows).
+    """
+    return list(session.scalars(select(Employee).order_by(Employee.id)).all())
 
 
 # --- Story 1.6: the guard inputs (AD-22, AD-23) ----------------------------------------

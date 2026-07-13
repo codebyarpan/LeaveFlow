@@ -28,7 +28,7 @@ from app.api.v1.pagination import MAX_PAGE_SIZE
 from app.core import security
 from app.domain import vocabulary
 from app.repositories.engine import get_engine
-from app.repositories.models import Department, Employee, LeaveType
+from app.repositories.models import Department, Employee, LeaveBalance, LeaveType
 
 # Importing `app.main` runs its `CODE_TO_STATUS.update(...)`, so `LEAVE_TYPE_CODE_IN_USE`
 # maps to 409, `ACTION_NOT_PERMITTED` to 403 and `TOKEN_INVALID` to 401 when the app renders
@@ -103,6 +103,16 @@ def callers(db_connection: Connection) -> Iterator[_Callers]:
         yield _Callers(tokens)
     finally:
         with Session(get_engine()) as session:
+            # Story 2.4: creating a Leave Type materializes a leave_balance row for EVERY
+            # Employee — including these caller Employees — so their balances must be cleared
+            # before the FK-guarded Employee delete.
+            session.execute(
+                delete(LeaveBalance).where(
+                    LeaveBalance.employee_id.in_(
+                        select(Employee.id).where(Employee.email.in_(emails))
+                    )
+                )
+            )
             session.execute(delete(Employee).where(Employee.email.in_(emails)))
             session.execute(delete(Department).where(Department.name == department_name))
             session.commit()
@@ -126,6 +136,15 @@ def _valid_body(code: str) -> dict[str, object]:
 
 def _delete_code(code: str) -> None:
     with Session(get_engine()) as session:
+        # Story 2.4: a Leave Type created through POST /leave-types has a materialized
+        # leave_balance row per Employee; clear them before the FK-guarded type delete.
+        session.execute(
+            delete(LeaveBalance).where(
+                LeaveBalance.leave_type_id.in_(
+                    select(LeaveType.id).where(LeaveType.code == code)
+                )
+            )
+        )
         session.execute(delete(LeaveType).where(LeaveType.code == code))
         session.commit()
 

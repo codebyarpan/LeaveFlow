@@ -121,6 +121,19 @@ LEAVE_TYPE_CODE_IN_USE = "LEAVE_TYPE_CODE_IN_USE"
 # `main.py`. The holiday calendar starts empty and is populated through the API (AD-11-adjacent).
 HOLIDAY_DATE_IN_USE = "HOLIDAY_DATE_IN_USE"
 
+# Balance code (Story 2.4, api-contracts §4.4, AD-5). `INSUFFICIENT_BALANCE` → 400 is the
+# refusal the balance-mutation module (`services/balances.py`) raises when a `reserve` or a
+# `consume_direct` would take more days than `available` (`accrued − consumed − reserved`),
+# read under the row's `SELECT … FOR UPDATE` lock. It is the GATE (AD-5): the three CHECK
+# constraints on `leave_balance` are only the backstop, and a CHECK reaching a client is a
+# defect and a 500 — so the module pre-checks and raises this typed 400 first, naming
+# `days_requested` and `days_available` in `details` (NFR-17: "not enough balance" is not an
+# actionable answer). Its raise site is `services/balances.py`, so — following the discipline
+# that declares a code WITH its raise site (see `EMPLOYEE_HAS_PENDING_REQUESTS` above) — it is
+# declared here, not in the later submission story (2.6) that merely CALLS `reserve`. Wired to
+# 400 in `main.py`.
+INSUFFICIENT_BALANCE = "INSUFFICIENT_BALANCE"
+
 __all__ = [
     "ROLE_EMPLOYEE",
     "ROLE_MANAGER",
@@ -137,4 +150,5 @@ __all__ = [
     "INVALID_NAME",
     "LEAVE_TYPE_CODE_IN_USE",
     "HOLIDAY_DATE_IN_USE",
+    "INSUFFICIENT_BALANCE",
 ]

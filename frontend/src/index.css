@@ -440,3 +440,18 @@ body {
 .emp-row .emp-edit {
   flex-basis: 100%;
 }
+
+/* Dashboard balances (Story 2.4): Available is the prominent figure on the right of each
+   row; Reserved/Consumed are disclosed alongside in the muted secondary line. */
+.balance-available {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.125rem;
+}
+
+.balance-available-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1;
+}

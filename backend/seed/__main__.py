@@ -15,12 +15,15 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from app.core.logging import configure_logging
 from app.core.security import hash_password
 from app.core.settings import get_settings
 from app.domain import vocabulary
+from app.domain.proration import prorate_entitlement
 from app.repositories.models import Department, Employee, LeaveType
+from app.services import balances
 
 logger = logging.getLogger("seed")
 
@@ -170,6 +173,38 @@ def seed() -> None:
                     .values(**leave_type)
                     .on_conflict_do_nothing(index_elements=["code"])
                 )
+
+            # Story 2.4: materialize the Admin's balance rows (one per Leave Type, current Leave
+            # Year), so the seeded Admin has a viewable balance — the create hooks in
+            # `create_employee`/`create_leave_type` never fire for the seed's raw inserts. Routes
+            # through `balances.set_accrual` only (AD-17), on a Session bound to THIS connection so
+            # it shares the seed's single transaction (the outer `connection.commit()` commits it).
+            # `set_accrual` is an upsert, so a re-seed leaves exactly one row per pair (idempotent,
+            # matching the Admin/Leave-Type idiom above). `carried_forward = 0` (first year).
+            admin_id, admin_joining_date = connection.execute(
+                select(Employee.id, Employee.joining_date)
+                .where(Employee.email == settings.seed_admin_email)
+                .limit(1)
+            ).one()
+            leave_type_rows = connection.execute(
+                select(LeaveType.id, LeaveType.annual_entitlement)
+            ).all()
+
+            current_year = datetime.date.today().year
+            with Session(bind=connection) as session:
+                for leave_type_id, annual_entitlement in leave_type_rows:
+                    balances.set_accrual(
+                        session,
+                        employee_id=admin_id,
+                        leave_type_id=leave_type_id,
+                        leave_year=current_year,
+                        prorated_entitlement=prorate_entitlement(
+                            annual_entitlement, admin_joining_date, current_year
+                        ),
+                        carried_forward=0,
+                        entitlement_basis=annual_entitlement,
+                    )
+                session.flush()
 
             connection.commit()
 

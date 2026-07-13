@@ -15,8 +15,8 @@ from sqlalchemy import Connection, text
 
 # The current head revision. It moves forward one story at a time; the assertion below
 # keeps its meaning — "the database is stamped at head", not "at some revision or other".
-# Story 2.2 advanced it to `0004_company_holiday`.
-HEAD_REVISION = "0004_company_holiday"
+# Story 2.4 advanced it to `0005_leave_balance`.
+HEAD_REVISION = "0005_leave_balance"
 
 
 def _public_tables(db_connection: Connection) -> set[str]:
@@ -116,4 +116,82 @@ def test_company_holiday_table_shipped_with_its_columns_and_unique_date(
     assert any("(holiday_date)" in definition for definition in unique_defs), (
         "company_holiday must carry UNIQUE (holiday_date) — the AD-5 backstop the "
         "duplicate-date 409 story depends on"
+    )
+
+
+def test_leave_balance_table_shipped_with_its_columns_checks_and_unique(
+    db_connection: Connection,
+) -> None:
+    """Story 2.4: `0005` created `leave_balance` with its columns, the three CHECKs and the UNIQUE.
+
+    Mirrors the leave_type/company_holiday smokes, proving from the live catalog what the story
+    rests on: the seven quantity columns (all INTEGER) plus the two FKs and `id`; NO `available`
+    column (DR-3/AD-5 — it is derived, never stored); the three AD-5 backstop CHECKs; and the
+    `UNIQUE (employee_id, leave_type_id, leave_year)` whose implicit btree index serves the
+    `FOR UPDATE` lock (ERD §4.4).
+    """
+    columns = {
+        row[0]: row[1]
+        for row in db_connection.execute(
+            text(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'leave_balance'"
+            )
+        )
+    }
+    assert set(columns) == {
+        "id",
+        "employee_id",
+        "leave_type_id",
+        "leave_year",
+        "accrued",
+        "prorated_entitlement",
+        "carried_forward",
+        "entitlement_basis",
+        "reserved",
+        "consumed",
+    }
+    # No stored `available` — it is derived at the projection (DR-3, AD-5).
+    assert "available" not in columns
+    # The quantity columns are INTEGER (DR-10), never NUMERIC/float.
+    for quantity in (
+        "leave_year",
+        "accrued",
+        "prorated_entitlement",
+        "carried_forward",
+        "entitlement_basis",
+        "reserved",
+        "consumed",
+    ):
+        assert columns[quantity] == "integer"
+
+    check_defs = db_connection.execute(
+        text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'public.leave_balance'::regclass AND contype = 'c'"
+        )
+    ).scalars().all()
+    # PostgreSQL normalizes and re-parenthesizes the expression (`(accrued - consumed) - reserved`),
+    # so match the normalized forms rather than the source SQL string.
+    joined_checks = " ".join(check_defs)
+    assert "(accrued - consumed) - reserved" in joined_checks, (
+        "leave_balance must carry CHECK (accrued - consumed - reserved >= 0) — the AD-5 backstop"
+    )
+    assert "reserved >= 0" in joined_checks and "consumed >= 0" in joined_checks
+    assert "prorated_entitlement + carried_forward" in joined_checks, (
+        "leave_balance must carry the accrual-composition CHECK (AD-5)"
+    )
+
+    unique_defs = db_connection.execute(
+        text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'public.leave_balance'::regclass AND contype = 'u'"
+        )
+    ).scalars().all()
+    assert any(
+        "(employee_id, leave_type_id, leave_year)" in definition
+        for definition in unique_defs
+    ), (
+        "leave_balance must carry UNIQUE (employee_id, leave_type_id, leave_year) — one balance "
+        "per pair per year, whose implicit index is the FOR UPDATE access path (ERD §4.4)"
     )

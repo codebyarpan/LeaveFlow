@@ -1,5 +1,5 @@
 # generated: 2026-07-10
-# last_updated: 2026-07-13
+# last_updated: 2026-07-13  # story 2-4 -> review
 # project: LeaveFlow
 # project_key: NOKEY
 # tracking_system: file-system
@@ -112,7 +112,7 @@
 # ============================================================================
 
 generated: 2026-07-10
-last_updated: 2026-07-13  # story 2-3 code-reviewed -> done
+last_updated: 2026-07-13  # story 2-4 code review -> done
 # story 1-4 moved ready-for-dev -> in-progress -> review 2026-07-11
 # story 1-4 code review 2026-07-11: 5 patches applied, review -> done
 # story 1-5 created 2026-07-11: backlog -> ready-for-dev
@@ -136,6 +136,9 @@ last_updated: 2026-07-13  # story 2-3 code-reviewed -> done
 # story 2-3 created 2026-07-13: backlog -> ready-for-dev (pure domain count_leave_days + AD-2 frontend guard; no schema/endpoint)
 # story 2-3 moved ready-for-dev -> in-progress -> review 2026-07-13 (pure count_leave_days + AD-2 frontend guard; backend pytest 250 passed DB-free domain tests; frontend build+lint clean; no schema/migration/endpoint)
 # story 2-3 code review 2026-07-13: 2 patches applied (datetime->date coercion, holiday delete list-reconcile onSettled), 5 deferred (all re-confirmed already in deferred-work.md), 8 dismissed, review -> done
+# story 2-4 created 2026-07-13: backlog -> ready-for-dev (full slice: leave_balance schema+CHECKs, pure proration, AD-17 8-method mutation module w/ INSUFFICIENT_BALANCE, materialization hooks into employee/leave-type create, two scoped read endpoints, employee dashboard)
+# story 2-4 moved ready-for-dev -> in-progress -> review 2026-07-13 (leave_balance schema 0005; pure proration; AD-17 eight-method mutation module w/ INSUFFICIENT_BALANCE; materialization hooks into employee/leave-type create + seed; two scoped reads incl. first multi-scope endpoint; employee dashboard. backend pytest 292 passed; import-linter 7/7 kept; frontend build+lint clean)
+# story 2-4 code review 2026-07-13: all 12 ACs satisfied (no violations); 3 patches applied (lock_balance populate_existing TOCTOU fix, negative-days guard on 5 mutators, literal 4.16->4 proration test), 5 deferred (concurrent-create materialization race accepted, year-rollover->2.10, set_accrual recalc guard->2.11/2.12, negative annual_entitlement->2.1 schema, leave_type_id index), 8 dismissed; backend pytest 292 passed; review -> done
 project: LeaveFlow
 project_key: NOKEY
 tracking_system: file-system
@@ -164,7 +167,7 @@ development_status:
   2-1-leave-types-as-configuration: done
   2-2-the-company-holiday-calendar: done
   2-3-the-leave-day-count-one-implementation-nowhere-else: done
-  2-4-leave-balances-three-quantities-one-derived: backlog
+  2-4-leave-balances-three-quantities-one-derived: done
   2-5-see-what-a-request-will-cost-before-committing-to-it: backlog
   2-6-submit-a-leave-request: backlog
   2-7-decide-a-request-approve-reject-cancel: backlog

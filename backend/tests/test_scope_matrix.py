@@ -81,6 +81,15 @@ _SCOPE_REGISTRY: dict[tuple[str, str], frozenset[Scope]] = {
     # `/departments/{id}` writes, this is `all`, not a per-Employee scope. (`POST`/`GET
     # /holidays` carry no path parameter, so they are out of the matrix.)
     ("DELETE", "/api/v1/holidays/{holiday_id}"): frozenset({Scope.ALL}),
+    # Story 2.4 — the FIRST multi-scope entry (every Epic 1 entry above is a single `{Scope.ALL}`).
+    # `GET /employees/{id}/balances` is granted to an Admin (scope `all` — anyone) AND a Manager
+    # (scope `reports` — their Direct Reports only), api-contracts §4.4 / FR-07. `leave_balance`
+    # is the first genuinely data-scoped resource, so a Manager naming a non-report gets a
+    # byte-identical 404 (AD-10). (`GET /balances` has no path parameter → out of the matrix,
+    # like `/me`.)
+    ("GET", "/api/v1/employees/{employee_id}/balances"): frozenset(
+        {Scope.REPORTS, Scope.ALL}
+    ),
 }
 
 

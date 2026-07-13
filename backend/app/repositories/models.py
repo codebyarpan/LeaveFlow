@@ -21,7 +21,7 @@ same commit.
 import datetime
 import uuid
 
-from sqlalchemy import CheckConstraint, ForeignKey, Text, text
+from sqlalchemy import CheckConstraint, ForeignKey, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.repositories.base import Base
@@ -165,3 +165,90 @@ class CompanyHoliday(Base):
     # and break AC2/AD-12/DR-2a.
     holiday_date: Mapped[datetime.date] = mapped_column(nullable=False, unique=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class LeaveBalance(Base):
+    """An Employee's balance for one Leave Type in one Leave Year — three quantities, one derived.
+
+    Implements: FR-07 (a balance is `available` with `reserved`/`consumed` alongside), DR-3 /
+    AD-5 (there is NO `available` column — it is derived `accrued − consumed − reserved` at the
+    projection, never stored), AD-17 (only `services/balances.py` writes any quantity column
+    here), SM-5 (a Leave Type added through the API immediately has a balance to apply against).
+
+    Three quantities are STORED — `accrued` (what was granted), `reserved` (committed to Pending
+    requests) and `consumed` (spent on approved leave); `available` is DERIVED. `prorated_
+    entitlement` and `carried_forward` are the two parts `accrued` composes from (`accrued =
+    prorated_entitlement + carried_forward`, a non-deferrable equality CHECK — so `set_accrual`
+    writes all three in one statement). `entitlement_basis` records the `annual_entitlement` the
+    row was accrued under, which FR-06's RECALCULATE recalculates *from* (ERD §2.1). Every column
+    is plain `INTEGER` — a Leave Day is a whole number of days, never `NUMERIC`/float (DR-10).
+
+    `reserved` and `consumed` carry `server_default=0` so a freshly materialized row (through
+    `set_accrual`'s insert, which names only the accrual triple) defaults them to 0 — keeping
+    `reserve`/`consume_*` the only paths that ever *change* a committed/spent quantity.
+
+    The three CHECKs are the AD-5 BACKSTOP, never the gate: the service pre-checks `available ≥
+    days` under the row lock and raises `INSUFFICIENT_BALANCE`; a CHECK reaching a client is a
+    defect and a 500. `UNIQUE (employee_id, leave_type_id, leave_year)` is one balance per pair
+    per year — and its implicit btree index IS the `SELECT … FOR UPDATE` access path (ERD §4.4),
+    so no second index is declared.
+
+    Like every model here, this must stay byte-for-byte faithful to its migration
+    (`0005_leave_balance`): `alembic check` emits an empty diff only while they agree, and
+    `tests/integration/test_model_migration_agreement.py` runs that check in the suite. Each
+    constraint carries an explicit `name=` byte-identical to the migration's.
+    """
+
+    __tablename__ = "leave_balance"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        # PostgreSQL 18 native built-in — no extension (ERD §4.4), mirroring every table.
+        server_default=text("uuidv7()"),
+    )
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("employee.id"), nullable=False
+    )
+    leave_type_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leave_type.id"), nullable=False
+    )
+    # The calendar year the balance is for (DR-8). The "current Leave Year" is decided in
+    # `services/` (`date.today().year`), never here — the model carries the value, not the clock.
+    leave_year: Mapped[int] = mapped_column(nullable=False)
+    # The three composition columns. `accrued = prorated_entitlement + carried_forward` (the
+    # equality CHECK); `set_accrual` writes all three in one statement.
+    accrued: Mapped[int] = mapped_column(nullable=False)
+    prorated_entitlement: Mapped[int] = mapped_column(nullable=False)
+    carried_forward: Mapped[int] = mapped_column(nullable=False)
+    # What the row was accrued under — RECALCULATE's input (ERD §2.1).
+    entitlement_basis: Mapped[int] = mapped_column(nullable=False)
+    # Committed and spent. Default to 0 on a fresh materialization so `set_accrual`'s insert need
+    # not name them; only `reserve`/`consume_*`/`release_*`/`adjust_*` ever change them.
+    reserved: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    consumed: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+
+    # No `available` column — it is derived (DR-3, AD-5).
+
+    __table_args__ = (
+        # AD-5 backstops. The service is the gate; these never surface to a client.
+        CheckConstraint(
+            "accrued - consumed - reserved >= 0",
+            name="leave_balance_available_nonneg_check",
+        ),
+        CheckConstraint(
+            "reserved >= 0 AND consumed >= 0",
+            name="leave_balance_reserved_consumed_nonneg_check",
+        ),
+        CheckConstraint(
+            "accrued = prorated_entitlement + carried_forward",
+            name="leave_balance_accrued_composition_check",
+        ),
+        # One balance per (Employee, Leave Type, Leave Year); its implicit btree index is the
+        # FOR UPDATE access path (ERD §4.4), so no separate index is declared.
+        UniqueConstraint(
+            "employee_id",
+            "leave_type_id",
+            "leave_year",
+            name="leave_balance_employee_type_year_key",
+        ),
+    )

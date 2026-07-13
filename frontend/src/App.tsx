@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react'
 import { ME_QUERY_KEY, queryClient, useHealth, useMe } from './api'
 import { getToken, SESSION_EXPIRED_EVENT, setToken } from './api/session'
 import { LoginPage } from './features/auth/LoginPage'
+import { DashboardPage } from './features/dashboard/DashboardPage'
 import { DepartmentsPage } from './features/departments/DepartmentsPage'
 import { EmployeesPage } from './features/employees/EmployeesPage'
 import { HolidaysPage } from './features/holidays/HolidaysPage'
@@ -68,6 +69,11 @@ function AppShell() {
             request, and the server signs you out when it rejects one.
           </p>
         </section>
+
+        {/* The Employee dashboard (Story 2.4): the caller's own leave balances, Available
+            prominent with Reserved disclosed alongside. Renders for every authenticated user
+            (scope `self`); the client renders server figures as-is (AD-2). */}
+        <DashboardPage />
 
         {/* Self-service: renders for every authenticated user (Role "any"). The Full Name
             is editable here; every other field is read-only, and the server is the guard. */}

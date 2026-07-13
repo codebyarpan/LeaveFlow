@@ -25,7 +25,7 @@ from app.api.v1.pagination import MAX_PAGE_SIZE
 from app.core import security
 from app.domain import vocabulary
 from app.repositories.engine import get_engine
-from app.repositories.models import Department, Employee
+from app.repositories.models import Department, Employee, LeaveBalance
 
 # Populates `CODE_TO_STATUS` so EMAIL_ALREADY_IN_USE→409, REPORTING_CYCLE→400,
 # EMPLOYEE_HAS_DIRECT_REPORTS→409, ACTION_NOT_PERMITTED→403, RESOURCE_NOT_FOUND→404 render.
@@ -137,6 +137,15 @@ def world(db_connection: Connection) -> Iterator[_World]:
     finally:
         with Session(get_engine()) as session:
             like = f"%{suffix}%"
+            # Story 2.4: an Employee created through POST /employees has a materialized
+            # leave_balance row per Leave Type; clear them before the FK-guarded Employee delete.
+            session.execute(
+                delete(LeaveBalance).where(
+                    LeaveBalance.employee_id.in_(
+                        select(Employee.id).where(Employee.email.like(like))
+                    )
+                )
+            )
             session.execute(
                 update(Employee).where(Employee.email.like(like)).values(manager_id=None)
             )

@@ -47,4 +47,6 @@ export {
   useHolidays,
 } from './holidays'
 export type { CreateHolidayInput, Holiday } from './holidays'
+export { BALANCES_QUERY_KEY, useBalances } from './balances'
+export type { Balance } from './balances'
 export { queryClient } from './queryClient'

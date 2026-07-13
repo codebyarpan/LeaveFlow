@@ -51,6 +51,19 @@ def list_leave_types(
     return rows, total
 
 
+def all_leave_types(session: Session) -> list[LeaveType]:
+    """Return EVERY Leave Type, unpaginated, for Story 2.4's balance materialization.
+
+    A write-path full-table read: `create_employee` materializes a `leave_balance` row for the
+    new Employee × every Leave Type (AC3/SM-5), which needs all of them, not a page. Named
+    `all_`, NOT `list_`/`get_`, precisely so it is correctly not a scoped-getter candidate —
+    it feeds a materialization loop inside an Admin command, not a read projection, and a Leave
+    Type is organization-wide reference data with no per-Employee scope anyway. Ordered by `id`
+    so the materialization is deterministic (AD-3's ascending lock order for balance rows).
+    """
+    return list(session.scalars(select(LeaveType).order_by(LeaveType.id)).all())
+
+
 def get_leave_type(session: Session, leave_type_id: uuid.UUID) -> LeaveType | None:
     """Return the Leave Type with this id, or `None` if there is none.
 

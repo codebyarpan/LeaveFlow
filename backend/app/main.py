@@ -80,5 +80,10 @@ CODE_TO_STATUS.update(
         # pre-checks and re-raises the UNIQUE (holiday_date) IntegrityError as this typed
         # refusal, so the constraint stays a backstop (AD-5), mirroring LEAVE_TYPE_CODE_IN_USE.
         vocabulary.HOLIDAY_DATE_IN_USE: 409,
+        # Story 2.4 — the balance-mutation module refuses an overspend with 400. `reserve`/
+        # `consume_direct` pre-check `available ≥ days` under the row's FOR UPDATE lock and
+        # raise this before any write, so the leave_balance CHECK constraints stay a backstop
+        # (AD-5) and never surface as a raw 500. `details` names days_requested/days_available.
+        vocabulary.INSUFFICIENT_BALANCE: 400,
     }
 )
