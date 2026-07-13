@@ -20,6 +20,7 @@ import { DashboardPage } from './features/dashboard/DashboardPage'
 import { DepartmentsPage } from './features/departments/DepartmentsPage'
 import { EmployeesPage } from './features/employees/EmployeesPage'
 import { HolidaysPage } from './features/holidays/HolidaysPage'
+import { ManagerQueuePanel } from './features/leave/ManagerQueuePanel'
 import { RequestPreviewPanel } from './features/leave/RequestPreviewPanel'
 import { LeaveTypesPage } from './features/leaveTypes/LeaveTypesPage'
 import { ProfilePage } from './features/profile/ProfilePage'
@@ -81,6 +82,13 @@ function AppShell() {
             SUBMITS — after which Available falls immediately (the balances query is invalidated).
             The server is the sole day-count authority; the client renders its figures as-is (AD-2). */}
         <RequestPreviewPanel />
+
+        {/* The Manager decision queue (Story 2.7): a Manager's Direct Reports' PENDING requests,
+            each approvable/rejectable. Renders null for a non-Manager (its own useMe gate); the
+            server's 403 (require_role) and byte-identical 404 (reports scope) are the real guards.
+            After a decision the queue and balances refresh; the server's leave_days is rendered
+            as-is (AD-2). */}
+        <ManagerQueuePanel />
 
         {/* Self-service: renders for every authenticated user (Role "any"). The Full Name
             is editable here; every other field is read-only, and the server is the guard. */}

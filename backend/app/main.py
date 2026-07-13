@@ -95,5 +95,11 @@ CODE_TO_STATUS.update(
         vocabulary.INVALID_DATE_RANGE: 400,
         vocabulary.PAST_DATE_RANGE: 400,
         vocabulary.EMPLOYEE_HAS_PENDING_REQUESTS: 409,
+        # Story 2.7 — a guarded lifecycle transition (approve/reject/cancel) whose conditional
+        # `UPDATE … WHERE status = :from` matched zero rows: the request left the required state
+        # first (a lost race, AD-4). 409, and the whole transaction rolls back — no silent
+        # overwrite, no balance move, no audit row. `details` is empty (a state conflict names no
+        # numbers).
+        vocabulary.TRANSITION_NOT_ALLOWED: 409,
     }
 )

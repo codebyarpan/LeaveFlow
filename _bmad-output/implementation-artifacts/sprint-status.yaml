@@ -112,7 +112,8 @@
 # ============================================================================
 
 generated: 2026-07-10
-last_updated: 2026-07-13  # story 2-6 in-progress -> review
+last_updated: 2026-07-13  # story 2-7 review -> done (code review: 5 patches applied [onSettled self-heal refetch, stale-error reset, status encodeURIComponent, AC6 employee-403/G3-before-row-read test, Open-Q#4 manager-own-request documenting test], Open Decision #4 resolved keep-REPORTS, 3 deferred, 5 dismissed incl self-approval false-positive; decide tests 15 passed, guards green, frontend build+lint clean)
+# story 2-6 in-progress -> review
 # story 1-4 moved ready-for-dev -> in-progress -> review 2026-07-11
 # story 1-4 code review 2026-07-11: 5 patches applied, review -> done
 # story 1-5 created 2026-07-11: backlog -> ready-for-dev
@@ -144,6 +145,7 @@ last_updated: 2026-07-13  # story 2-6 in-progress -> review
 # story 2-5 code review 2026-07-13: all 12 ACs satisfied (no violations); 3 patches applied (366-day preview span cap via PreviewRequest model_validator->422 resource guard, preview.reset() on form-change so no stale cost shown, leave-type select loading/empty/error state), 4 dismissed as by-design/spec-sanctioned; new span-cap test added; backend pytest 310 passed; frontend build+lint clean; review -> done
 # story 2-6 created 2026-07-13: backlog -> ready-for-dev (full write slice: 0006 migration creates leave_request + audit_entry tables; five new refusal codes (INVALID_DATE_RANGE/PAST_DATE_RANGE/SPANS_TWO_LEAVE_YEARS/ZERO_LEAVE_DAYS 400 + EMPLOYEE_HAS_PENDING_REQUESTS 409) + 4 status constants + audit vocab; one-transaction submit command reusing count_leave_days + balances.reserve/consume_direct under lock, one audit_entry same txn, AD-18 leave_days frozen; managerless auto-APPROVE via consume_direct; SM-1 concurrent double-submit test on real PostgreSQL; makes 1.6 EMPLOYEE_HAS_PENDING_REQUESTS guard executable in deactivate_employee; frontend submit slice. Open decision: AD-9 audit grants (single Postgres role -> code-layer append-only recommended))
 # story 2-6 moved ready-for-dev -> in-progress -> review 2026-07-13 (0006 leave_request + audit_entry; 4 status constants + 5 codes + audit vocab; one-transaction submit reusing count_leave_days + reserve/consume_direct under lock, one audit_entry same txn, AD-18 freeze; managerless auto-APPROVE via consume_direct; POST /leave-requests; EMPLOYEE_HAS_PENDING_REQUESTS guard executable in deactivate_employee; SM-1 concurrent double-submit on real PostgreSQL; frontend submission slice w/ immediate Available update + refusal-details. AD-9 realized code-layer append-only (single Postgres role); REASON_SUBMITTED coined; PAST_DATE_RANGE = end<today. backend pytest 332 passed; frontend build+lint clean)
+# story 2-7 created 2026-07-13: backlog -> ready-for-dev (transitions half of the lifecycle: approve/reject/cancel as AD-4 guarded conditional UPDATEs w/ 409 TRANSITION_NOT_ALLOWED; consume_reserved/release_reserved; one audit_entry per transition; the two FR-03-scoped reads GET /leave-requests + /<id> w/ status filter + pagination; role gate -> Admin 403, non-report Manager byte-identical 404 = SM-3 SATISFIED; DR-12 decision-time authority; Manager queue frontend. NO migration/model change. Open: transition reason constants, response shape incl Leave Type/applicant, revise 2.6 append-only surface test)
 project: LeaveFlow
 project_key: NOKEY
 tracking_system: file-system
@@ -175,7 +177,7 @@ development_status:
   2-4-leave-balances-three-quantities-one-derived: done
   2-5-see-what-a-request-will-cost-before-committing-to-it: done
   2-6-submit-a-leave-request: done
-  2-7-decide-a-request-approve-reject-cancel: backlog
+  2-7-decide-a-request-approve-reject-cancel: done
   2-8-cancel-approved-leave-through-a-cancellation-request: backlog
   2-9-the-audit-trail: backlog
   2-10-the-leave-year-rollover: backlog

@@ -195,6 +195,26 @@ SUBJECT_LEAVE_REQUEST = "LEAVE_REQUEST"
 REASON_SUBMITTED = "SUBMITTED"
 REASON_AUTO_APPROVED_NO_MANAGER = "AUTO_APPROVED_NO_MANAGER"
 
+# Transition reasons (Story 2.7, ERD §2, AD-8/AD-21). The three `reason` strings the manual
+# lifecycle transitions write on their `audit_entry` row — an approve, a reject, an applicant
+# cancel. Symmetric with `REASON_SUBMITTED`/`REASON_AUTO_APPROVED_NO_MANAGER` (Open Decision #1,
+# option (a)): the `from_state`/`to_state` on the row already carry the *what* of the transition;
+# `reason` carries a stable label. `audit_entry.reason` is NOT NULL, so every transition names one.
+# They map to no HTTP status, so `CODE_TO_STATUS` is untouched.
+REASON_APPROVED = "APPROVED"
+REASON_REJECTED = "REJECTED"
+REASON_CANCELLED = "CANCELLED"
+
+# Transition-conflict code (Story 2.7, api-contracts §2). `TRANSITION_NOT_ALLOWED` → 409 is the
+# refusal a guarded conditional `UPDATE … WHERE status = :from` raises when it matches ZERO rows:
+# the request is no longer in the state the transition requires — someone committed a competing
+# transition first (a Manager approving a request the applicant just cancelled), or the request was
+# never `PENDING`. This is AD-4's first-committed-wins made a clean 409 rather than a silent
+# overwrite; the whole transaction rolls back, so no balance moves and no audit row lands. Its raise
+# site is `services/leave_requests` (the three transition commands), so it is declared here WITH that
+# raise site, the same discipline the range refusals followed. Wired to 409 in `main.py`.
+TRANSITION_NOT_ALLOWED = "TRANSITION_NOT_ALLOWED"
+
 __all__ = [
     "ROLE_EMPLOYEE",
     "ROLE_MANAGER",
@@ -228,4 +248,8 @@ __all__ = [
     "SUBJECT_LEAVE_REQUEST",
     "REASON_SUBMITTED",
     "REASON_AUTO_APPROVED_NO_MANAGER",
+    "REASON_APPROVED",
+    "REASON_REJECTED",
+    "REASON_CANCELLED",
+    "TRANSITION_NOT_ALLOWED",
 ]

@@ -513,13 +513,20 @@ def test_sm1_concurrent_double_submit_admits_exactly_one(world: _World) -> None:
 
 
 def test_audit_and_request_repositories_expose_no_update_or_delete() -> None:
-    """AC2 (AD-8/AD-9): the binding, testable form of "append-only" is the code layer — neither
-    `repositories/audit_entry` nor `repositories/leave_request` exposes an update or delete method.
+    """AC2 (AD-8/AD-9): the binding, testable form of "append-only" is the code layer.
 
     With the codebase running a single Postgres role, a DB-role REVOKE UPDATE/DELETE would be a
-    no-op (an owner cannot be denied on its own table — Story 2.6 Decision Point), so THIS surface
-    is the guarantee. `audit_entry` offers only INSERT; `leave_request` offers INSERT + a COUNT.
-    The request row's lifecycle transitions are Story 2.7's guarded UPDATE, not a method here.
+    no-op (an owner cannot be denied on its own table — Story 2.6 Decision Point), so THIS repository
+    surface is the guarantee.
+
+    `audit_entry` is STRICTLY append-only, FOREVER: exactly `{insert_audit_entry}`, no update, no
+    delete — unchanged by Story 2.7 (AD-8). `leave_request` gains, in Story 2.7, the two FR-03-scoped
+    reads (`get_leave_request`, `list_leave_requests`) and the SINGLE AD-4 guarded conditional
+    transition (`transition_status` — an `UPDATE … WHERE status = :from`, the only sanctioned
+    mutation), alongside 2.6's `insert_leave_request` + `count_pending_for_employee`. What stays
+    forbidden — and what this assertion still guarantees — is any FREE-FORM update or delete of a
+    request row: no `update_leave_request`, no `delete_leave_request`. The exact expected set below
+    pins that: a new mutator that is not the guarded transition fails the build here.
     """
     from app.repositories import audit_entry as audit_entry_repo
     from app.repositories import leave_request as leave_request_repo
@@ -549,9 +556,17 @@ def test_audit_and_request_repositories_expose_no_update_or_delete() -> None:
         if getattr(getattr(leave_request_repo, name), "__module__", "")
         == leave_request_repo.__name__
     }
-    assert request_surface == {"insert_leave_request", "count_pending_for_employee"}, (
-        "leave_request repo must expose no update/delete of a request row (create + count only); "
-        f"found {request_surface}"
+    assert request_surface == {
+        "insert_leave_request",
+        "count_pending_for_employee",
+        # Story 2.7: the two scoped reads + the ONE AD-4 guarded conditional transition. No
+        # free-form update/delete of a request row is offered — that is what stays guaranteed.
+        "get_leave_request",
+        "list_leave_requests",
+        "transition_status",
+    }, (
+        "leave_request repo must expose only its create, count, scoped reads and the single AD-4 "
+        f"guarded transition — never a free-form update/delete of a request row; found {request_surface}"
     )
 
 

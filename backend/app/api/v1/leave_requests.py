@@ -35,15 +35,29 @@ React `usePreviewLeaveRequest` hook.
 from __future__ import annotations
 
 import datetime
+import enum
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, model_validator
 
-from app.api.v1.dependencies import Actor, get_current_employee
+from app.api.v1.dependencies import Actor, get_current_employee, require_role
+from app.api.v1.pagination import Page, PageParams
+from app.services import authorization as authz
 from app.services import leave_requests as leave_requests_service
 
 router = APIRouter()
+
+# The `status` filter's accepted values (Story 2.7, AC4). Built at runtime from the service's
+# re-exported `LEAVE_STATUS_VALUES` so no status LITERAL is typed in `api/` — `test_vocabulary_
+# literals.py` forbids the string `"PENDING"` here, and contract 2 forbids importing `domain/`. As a
+# FastAPI query-param type this yields a framework `422` on an unrecognized value (the same
+# input-validation class as a bad UUID), never a domain error, so `CODE_TO_STATUS`/vocabulary stay
+# untouched. A member's `.value` is the status string handed to the service.
+LeaveStatusFilter = enum.Enum(  # type: ignore[misc]
+    "LeaveStatusFilter",
+    {value: value for value in leave_requests_service.LEAVE_STATUS_VALUES},
+)
 
 # Defensive resource guard (code review 2026-07-13; extended to submit, Story 2.6). Both endpoints
 # are deliberately permissive on range *validity* — the real refusals are the domain's
@@ -251,3 +265,151 @@ def submit_leave_request(
         end=body.end_date,
     )
     return _to_submit_response(view)
+
+
+class LeaveRequestResponse(BaseModel):
+    """A Leave Request on the wire — the read/transition shape (Story 2.7, §4.5, Open Decision #2).
+
+    The request's own fields plus the applicant (`employee_id`/`employee_name`, so a Manager's queue
+    shows WHOSE request it is — AC9) and the Leave Type (`leave_type_code`/`leave_type_name`, AC5's
+    "with its Leave Type"). `leave_days` is the STORED, frozen figure (read, never recomputed —
+    AD-18); `status` is the current state (a transition returns the NEW state). The submit response
+    stays its own minimal `SubmitResponse` — this is the fuller shape the queue and the by-id read
+    need.
+    """
+
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_name: str
+    leave_type_id: uuid.UUID
+    leave_type_code: str
+    leave_type_name: str
+    start_date: datetime.date
+    end_date: datetime.date
+    leave_days: int
+    status: str
+
+
+def _to_leave_request_response(view: object) -> LeaveRequestResponse:
+    """Project a `LeaveRequestView` into the response, BY HAND (contract 2, the `balances.py` precedent).
+
+    Typed `object` because `api/` may import neither the service dataclass nor the ORM; the service
+    guarantees the fields are present. `leave_days` is read from the stored value the view carries —
+    never recomputed here (AD-18). No `from_attributes`.
+    """
+    return LeaveRequestResponse(
+        id=view.id,
+        employee_id=view.employee_id,
+        employee_name=view.employee_name,
+        leave_type_id=view.leave_type_id,
+        leave_type_code=view.leave_type_code,
+        leave_type_name=view.leave_type_name,
+        start_date=view.start_date,
+        end_date=view.end_date,
+        leave_days=view.leave_days,
+        status=view.status,
+    )
+
+
+@router.post(
+    "/leave-requests/{request_id}/approve",
+    status_code=status.HTTP_200_OK,
+    tags=["leave-requests"],
+)
+def approve_leave_request(
+    request_id: uuid.UUID,
+    caller: Actor = Depends(require_role(authz.ROLE_MANAGER)),
+) -> LeaveRequestResponse:
+    """Approve a Direct Report's Pending request (AC1, AC2, AC6, AC7).
+
+    `require_role(ROLE_MANAGER)`: an Admin or Employee is refused `403 ACTION_NOT_PERMITTED` BEFORE
+    the body runs (AC6, a role denial by G3 — decided before any row is read). Scope `REPORTS` then
+    decides whether THIS Manager owns THIS applicant: a non-report gets a byte-identical `404`
+    (AC7). A request no longer `PENDING` gets `409 TRANSITION_NOT_ALLOWED` (AC2). On success the
+    days move `reserved → consumed` and the updated request is returned.
+    """
+    view = leave_requests_service.approve_leave_request(caller, request_id)
+    return _to_leave_request_response(view)
+
+
+@router.post(
+    "/leave-requests/{request_id}/reject",
+    status_code=status.HTTP_200_OK,
+    tags=["leave-requests"],
+)
+def reject_leave_request(
+    request_id: uuid.UUID,
+    caller: Actor = Depends(require_role(authz.ROLE_MANAGER)),
+) -> LeaveRequestResponse:
+    """Reject a Direct Report's Pending request (AC1, AC2, AC6, AC7).
+
+    Same gate and scope as approve: Admin/Employee → `403`, non-report → `404`, not-`PENDING` →
+    `409`. On success the reservation is released (`release_reserved`) and the updated request is
+    returned.
+    """
+    view = leave_requests_service.reject_leave_request(caller, request_id)
+    return _to_leave_request_response(view)
+
+
+@router.post(
+    "/leave-requests/{request_id}/cancel",
+    status_code=status.HTTP_200_OK,
+    tags=["leave-requests"],
+)
+def cancel_leave_request(
+    request_id: uuid.UUID,
+    caller: Actor = Depends(get_current_employee),
+) -> LeaveRequestResponse:
+    """Cancel one's OWN Pending request (AC3). Auth only, any role; scope `self`.
+
+    `get_current_employee`, NOT `require_role`: scope `self` is intrinsic to the applicant. A
+    non-owner's request is out of scope → byte-identical `404`; a settled request → `409
+    TRANSITION_NOT_ALLOWED`. On success the reservation is released and the updated request is
+    returned.
+    """
+    view = leave_requests_service.cancel_leave_request(caller, request_id)
+    return _to_leave_request_response(view)
+
+
+@router.get("/leave-requests", tags=["leave-requests"])
+def list_leave_requests(
+    params: PageParams = Depends(),
+    status_filter: LeaveStatusFilter | None = Query(default=None, alias="status"),
+    caller: Actor = Depends(get_current_employee),
+) -> Page[LeaveRequestResponse]:
+    """List Leave Requests, scoped and paged, optionally filtered by status (AC4). Any role.
+
+    `get_current_employee`: role `any`, scope resolved from the caller's role in the service — an
+    Employee receives their own, a Manager their Direct Reports', an Admin all (a SQL predicate,
+    never a post-filter). The `status` query param is validated against the four allowed values by
+    `LeaveStatusFilter` (a bad value is a framework `422`); it narrows the page when present. The
+    envelope is the shared `Page` — `items`/`page`/`page_size`/`total`, `page_size` clamped to the
+    server maximum by `PageParams`.
+    """
+    views, total = leave_requests_service.list_leave_requests(
+        caller,
+        status=status_filter.value if status_filter is not None else None,
+        limit=params.limit,
+        offset=params.offset,
+    )
+    return Page[LeaveRequestResponse](
+        items=[_to_leave_request_response(view) for view in views],
+        page=params.page,
+        page_size=params.page_size,
+        total=total,
+    )
+
+
+@router.get("/leave-requests/{request_id}", tags=["leave-requests"])
+def get_leave_request(
+    request_id: uuid.UUID,
+    caller: Actor = Depends(get_current_employee),
+) -> LeaveRequestResponse:
+    """Read one Leave Request by id, scoped to the caller (AC5, AC7). Any role.
+
+    Scope resolves from the caller's role in the service; an out-of-scope id (a non-report Manager,
+    a non-owner Employee) is a byte-identical `404` (AC7). Returns the request with its Leave Type,
+    date range, STORED `leave_days` (AD-18, never recomputed) and current state.
+    """
+    view = leave_requests_service.get_leave_request(caller, request_id)
+    return _to_leave_request_response(view)

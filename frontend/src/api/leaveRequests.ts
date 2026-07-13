@@ -11,10 +11,13 @@
  * reserves the days, so on success it invalidates the balances query — Available falls immediately
  * (AC8). Both follow the `apiFetch` POST shape `useCreateLeaveType`/`useCreateHoliday` established.
  */
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from './client'
 import { BALANCES_QUERY_KEY } from './balances'
+// `Page<T>` has a single home in `departments.ts` (the first list endpoint established it); every
+// later list endpoint reuses that type rather than re-declaring the envelope.
+import type { Page } from './departments'
 
 /**
  * The preview request body — the Leave Type and the inclusive range, mirroring the backend
@@ -99,5 +102,98 @@ export function useSubmitLeaveRequest() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: BALANCES_QUERY_KEY })
     },
+  })
+}
+
+/**
+ * A Leave Request on the wire (Story 2.7), mirroring the backend `LeaveRequestResponse` (§4.5). It
+ * carries the applicant (`employee_id`/`employee_name`, so a Manager's queue shows WHOSE request it
+ * is) and the Leave Type (`leave_type_code`/`leave_type_name`), plus the range, the server's FROZEN
+ * `leave_days` (AD-18, rendered as received — the client computes NO day count) and the `status`.
+ */
+export interface LeaveRequest {
+  id: string
+  employee_id: string
+  employee_name: string
+  leave_type_id: string
+  leave_type_code: string
+  leave_type_name: string
+  start_date: string
+  end_date: string
+  leave_days: number
+  status: string
+}
+
+/**
+ * The base cache key for the leave-requests list. A per-`status` query caches under
+ * `[...LEAVE_REQUESTS_QUERY_KEY, status]`, so a `PENDING` queue and an `APPROVED` view never share
+ * an entry; a transition invalidates this BASE key, which TanStack matches by prefix — so every
+ * status view refetches at once. One home keeps the queries and the mutations in agreement.
+ */
+export const LEAVE_REQUESTS_QUERY_KEY = ['leaveRequests'] as const
+
+/**
+ * The scoped leave-requests list (FR-03). The server resolves scope from the caller's role — an
+ * Employee sees their own, a Manager their Direct Reports', an Admin all — so this one hook serves
+ * every role. An optional `status` narrows the page (the single filter this story grants).
+ *
+ * `options.enabled` gates the fetch (mirrors `useEmployees`): the Manager queue passes the resolved
+ * `isManager` so a non-Manager, which renders nothing, never issues the request at all.
+ */
+export function useLeaveRequests(status?: string, options?: { enabled?: boolean }) {
+  const path: `/${string}` =
+    status !== undefined
+      ? `/leave-requests?status=${encodeURIComponent(status)}`
+      : '/leave-requests'
+  return useQuery({
+    queryKey: [...LEAVE_REQUESTS_QUERY_KEY, status ?? 'ALL'],
+    queryFn: () => apiFetch<Page<LeaveRequest>>(path),
+    enabled: options?.enabled,
+  })
+}
+
+/**
+ * Invalidate the list AND the balances after a decision. A transition moves the APPLICANT's
+ * reserved/consumed server-side; invalidating balances is cheap and correct (the Manager's own
+ * balance is unaffected, but a stale cache never lingers). The list refetch is what makes the queue
+ * self-heal — a just-decided (or concurrently-changed) row leaves it.
+ *
+ * Wired on `onSettled`, NOT `onSuccess`: a `409 TRANSITION_NOT_ALLOWED` / `404 RESOURCE_NOT_FOUND`
+ * means the row was decided or cancelled UNDER the Manager — exactly the case whose whole point is to
+ * self-heal by dropping the now-stale row from the queue. Invalidating only on success would leave
+ * that row visible while the inline message claims the queue refreshed (which it must actually do).
+ */
+function invalidateAfterDecision(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: LEAVE_REQUESTS_QUERY_KEY })
+  void queryClient.invalidateQueries({ queryKey: BALANCES_QUERY_KEY })
+}
+
+/** Approve a Direct Report's Pending request (AC1). Manager-only server-side; scope `reports`. */
+export function useApproveLeaveRequest() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<LeaveRequest>(`/leave-requests/${id}/approve`, { method: 'POST' }),
+    onSettled: () => invalidateAfterDecision(queryClient),
+  })
+}
+
+/** Reject a Direct Report's Pending request (AC1). Manager-only server-side; scope `reports`. */
+export function useRejectLeaveRequest() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<LeaveRequest>(`/leave-requests/${id}/reject`, { method: 'POST' }),
+    onSettled: () => invalidateAfterDecision(queryClient),
+  })
+}
+
+/** Cancel one's OWN Pending request (AC3). Any role server-side; scope `self` (the applicant). */
+export function useCancelLeaveRequest() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<LeaveRequest>(`/leave-requests/${id}/cancel`, { method: 'POST' }),
+    onSettled: () => invalidateAfterDecision(queryClient),
   })
 }

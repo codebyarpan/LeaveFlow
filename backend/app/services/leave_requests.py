@@ -27,8 +27,10 @@ mutator and raises no refusal; `submit_leave_request` owns all of them.
 
 import datetime
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
+from sqlalchemy import Row
 from sqlalchemy.orm import Session
 
 from app.domain import calendar
@@ -45,6 +47,17 @@ from app.repositories.models import Employee
 from app.repositories.scoping import Scope
 from app.services import authorization as authz
 from app.services import balances
+
+# The four Leave Request status values, re-exported for the `api/` status filter (Story 2.7). The
+# route cannot import `domain/` (contract 2) or type the literal (`test_vocabulary_literals.py`), so
+# it reads the allowed filter values through this `api → services` edge — the same indirection
+# `authz` uses for the role constants — and builds its query-param enum from them at runtime.
+LEAVE_STATUS_VALUES: tuple[str, ...] = (
+    vocabulary.STATUS_PENDING,
+    vocabulary.STATUS_APPROVED,
+    vocabulary.STATUS_REJECTED,
+    vocabulary.STATUS_CANCELLED,
+)
 
 
 @dataclass(frozen=True)
@@ -84,6 +97,31 @@ class SubmitView:
     status: str
 
 
+@dataclass(frozen=True)
+class LeaveRequestView:
+    """A Leave Request as the read/transition path hands it up (Story 2.7, AC1/AC5/AC9).
+
+    Carries the request's own fields plus the applicant's `employee_id`/`employee_name` (so a
+    Manager's queue shows WHOSE request it is, AC9) and the Leave Type `code`/`name` (AC5's "with
+    its Leave Type", so the queue and by-id read are human-readable without a second round-trip —
+    Open Decision #2). `leave_days` is the STORED figure the row carries (AD-18) — no read or
+    transition recomputes it. A transition returns this with `status` set to the NEW state; a read
+    returns it with the row's current `status`. The `api/` route projects it by hand (it imports
+    neither the ORM nor this dataclass — contract 2, the `SubmitView` precedent).
+    """
+
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_name: str
+    leave_type_id: uuid.UUID
+    leave_type_code: str
+    leave_type_name: str
+    start_date: datetime.date
+    end_date: datetime.date
+    leave_days: int
+    status: str
+
+
 # One message per refusal, stated once at module level — the `services/balances._insufficient_
 # balance` / `services/leave_types` idiom. `details` names the numbers/boundary a refusal must
 # state (NFR-17), so a client can act on it rather than re-guess the request.
@@ -94,6 +132,9 @@ _SPANS_TWO_LEAVE_YEARS_MESSAGE = (
 )
 _ZERO_LEAVE_DAYS_MESSAGE = (
     "The requested range contains no working days, so it would cost no leave."
+)
+_TRANSITION_NOT_ALLOWED_MESSAGE = (
+    "The request is no longer in a state that allows this action."
 )
 
 
@@ -130,6 +171,58 @@ def _zero_leave_days() -> DomainError:
         code=vocabulary.ZERO_LEAVE_DAYS,
         message=_ZERO_LEAVE_DAYS_MESSAGE,
         details={},
+    )
+
+
+def _transition_not_allowed() -> DomainError:
+    """Build the `409 TRANSITION_NOT_ALLOWED` refusal — the guarded UPDATE matched zero rows (AC2).
+
+    A state conflict names no numbers, so `details` is empty — the request simply is not in the
+    state the transition required (a lost race, or a settled request). Mirrors the `_invalid_date_
+    range` idiom: one `_MESSAGE` const, one factory.
+    """
+    return DomainError(
+        code=vocabulary.TRANSITION_NOT_ALLOWED,
+        message=_TRANSITION_NOT_ALLOWED_MESSAGE,
+        details={},
+    )
+
+
+def _scope_for_role(role: str) -> Scope:
+    """Resolve an actor's role to the read scope it grants (Story 2.7, AC4/AC5).
+
+    The three-way extension of `balance_reads.py`'s two-way idiom: an Admin reads every request
+    (`ALL`), a Manager their Direct Reports' (`REPORTS`), and everyone else their own (`SELF`). A
+    pure function of the role string alone — no I/O — so it is unit-testable DB-free with a bare
+    role value (Task 9). The scope becomes a SQL predicate downstream (AD-10); it is never a
+    post-filter.
+    """
+    if role == authz.ROLE_ADMIN:
+        return Scope.ALL
+    if role == authz.ROLE_MANAGER:
+        return Scope.REPORTS
+    return Scope.SELF
+
+
+def _row_to_view(row: Row, *, status: str | None = None) -> LeaveRequestView:  # type: ignore[type-arg]
+    """Map a repository `_READ_COLUMNS` row to a `LeaveRequestView`.
+
+    `status` overrides the row's stored status when set — a transition returns the view with the
+    NEW state (the row still holds the OLD `from` state at read time), while a read passes `status=
+    None` and keeps the row's current value. `leave_days` is read straight from the stored column
+    (AD-18); nothing here recomputes it.
+    """
+    return LeaveRequestView(
+        id=row.id,
+        employee_id=row.employee_id,
+        employee_name=row.full_name,
+        leave_type_id=row.leave_type_id,
+        leave_type_code=row.code,
+        leave_type_name=row.name,
+        start_date=row.start_date,
+        end_date=row.end_date,
+        leave_days=row.leave_days,
+        status=row.status if status is None else status,
     )
 
 
@@ -340,3 +433,191 @@ def submit_leave_request(
         )
         session.commit()
         return view
+
+
+# The AD-17 balance mutator a transition applies: `consume_reserved` (approve) or `release_reserved`
+# (reject/cancel). Both share the keyword signature `(session, *, employee_id, leave_type_id,
+# leave_year, days)`; typed loosely because the two are the only values ever passed.
+_BalanceMutator = Callable[..., None]
+
+
+def _decide(
+    actor: Employee,
+    request_id: uuid.UUID,
+    *,
+    from_status: str,
+    to_status: str,
+    scope: Scope,
+    reason: str,
+    mutate: _BalanceMutator,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+) -> LeaveRequestView:
+    """The one transaction every transition (approve/reject/cancel) shares (AC1–AC3, AC7, AC8).
+
+    In strict order — the lock order the 2.7 Dev Notes justify (guarded UPDATE first, balance
+    second), the INVERSE of submission's balance-first order, so a lost race is a clean 409 before
+    any balance is touched:
+
+      1. Locate the request UNDER `scope` (`get_leave_request`, a plain non-locking SELECT). `None`
+         ⇒ `authz.not_found()` — a nonexistent id AND an out-of-scope one (a non-report Manager, a
+         non-owner Employee) are a byte-identical 404 (AD-10, AC7). Authority is bound HERE, at
+         decision time, from `actor.id` (DR-12, AC8): a reassigned applicant is decided by their
+         NEW Manager, and the scope predicate is `Employee.manager_id == :actor_id` evaluated now.
+      2. The AD-4 guarded transition (`transition_status`): `UPDATE … WHERE status = :from`. Zero
+         rows ⇒ `raise _transition_not_allowed()` (409) and the transaction rolls back — nothing
+         else has been written (AC2). This runs BEFORE the balance mutation on purpose: a lost race
+         is caught here, so `mutate` never runs against a reservation a competing transition already
+         released (which would raise `ValueError` → a raw 500 instead of the clean 409).
+      3. `mutate` the balance under its own row lock (`consume_reserved` on approve, `release_
+         reserved` on reject/cancel) — `leave_year = start_date.year` (a request never spans two
+         Leave Years, Story 2.6's guard). One AD-17 mutator; the transition never touches
+         `leave_days` or dates.
+      4. Exactly ONE `audit_entry`, in THIS transaction (AD-8): `from_state=from_status`,
+         `to_state=to_status`, naming the actor and the moment (`_now()`, the shell clock, AD-1).
+      5. `commit()`. Return the located row projected to a view with the NEW `status`.
+    """
+    with Session(get_engine(), expire_on_commit=False) as session:
+        row = leave_request_repo.get_leave_request(session, actor, request_id, scope)
+        if row is None:
+            authz.not_found()
+
+        moved = leave_request_repo.transition_status(
+            session,
+            request_id=request_id,
+            from_status=from_status,
+            to_status=to_status,
+        )
+        if moved == 0:
+            raise _transition_not_allowed()
+
+        mutate(
+            session,
+            employee_id=row.employee_id,
+            leave_type_id=row.leave_type_id,
+            leave_year=row.start_date.year,
+            days=row.leave_days,
+        )
+
+        audit_entry_repo.insert_audit_entry(
+            session,
+            subject_type=vocabulary.SUBJECT_LEAVE_REQUEST,
+            subject_id=request_id,
+            from_state=from_status,
+            to_state=to_status,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            reason=reason,
+            occurred_at=_now(),
+        )
+
+        view = _row_to_view(row, status=to_status)
+        session.commit()
+        return view
+
+
+def approve_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequestView:
+    """Approve a Direct Report's Pending request — `PENDING → APPROVED` (AC1, FR-09).
+
+    Scope `REPORTS`: only the applicant's current Manager decides it (the role gate has already
+    refused an Admin/Employee a 403 before this runs — AC6). Moves the days `reserved → consumed`
+    via `consume_reserved` (Available unchanged, the days were committed at submission). One
+    EMPLOYEE/APPROVED audit row.
+    """
+    return _decide(
+        actor,
+        request_id,
+        from_status=vocabulary.STATUS_PENDING,
+        to_status=vocabulary.STATUS_APPROVED,
+        scope=Scope.REPORTS,
+        reason=vocabulary.REASON_APPROVED,
+        mutate=balances.consume_reserved,
+        actor_type=vocabulary.ACTOR_EMPLOYEE,
+        actor_id=actor.id,
+    )
+
+
+def reject_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequestView:
+    """Reject a Direct Report's Pending request — `PENDING → REJECTED` (AC1, FR-09).
+
+    Scope `REPORTS` (role gate refuses an Admin/Employee first, AC6). Releases the reservation via
+    `release_reserved` (reserved down, Available back up). One EMPLOYEE/REJECTED audit row.
+    """
+    return _decide(
+        actor,
+        request_id,
+        from_status=vocabulary.STATUS_PENDING,
+        to_status=vocabulary.STATUS_REJECTED,
+        scope=Scope.REPORTS,
+        reason=vocabulary.REASON_REJECTED,
+        mutate=balances.release_reserved,
+        actor_type=vocabulary.ACTOR_EMPLOYEE,
+        actor_id=actor.id,
+    )
+
+
+def cancel_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequestView:
+    """Cancel one's OWN Pending request — `PENDING → CANCELLED` (AC3).
+
+    Scope `SELF` (intrinsic to the applicant — role `any`): only the owner cancels, a non-owner
+    gets a byte-identical 404, and a settled request gets a 409. Releases the reservation via
+    `release_reserved`. One EMPLOYEE/CANCELLED audit row naming the applicant. This is the applicant
+    cancelling their own PENDING request (`release_reserved`) — NOT Story 2.8's approved-leave
+    cancellation via a separate table (`release_consumed`); do not conflate them.
+    """
+    return _decide(
+        actor,
+        request_id,
+        from_status=vocabulary.STATUS_PENDING,
+        to_status=vocabulary.STATUS_CANCELLED,
+        scope=Scope.SELF,
+        reason=vocabulary.REASON_CANCELLED,
+        mutate=balances.release_reserved,
+        actor_type=vocabulary.ACTOR_EMPLOYEE,
+        actor_id=actor.id,
+    )
+
+
+def get_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequestView:
+    """Return one Leave Request by id, SCOPED to the caller (AC5, AC7).
+
+    Scope resolves from the caller's role (`_scope_for_role`: Admin `ALL`, Manager `REPORTS`, else
+    `SELF`). A READ session (no commit). The request is located UNDER that scope: `None` — a
+    nonexistent id OR an out-of-scope one — is a byte-identical `404 RESOURCE_NOT_FOUND` (AD-10).
+    The returned view carries the STORED `leave_days` (AD-18, never recomputed) and the row's
+    current `status`, plus the Leave Type and applicant labels.
+    """
+    scope = _scope_for_role(actor.role)
+    with Session(get_engine(), expire_on_commit=False) as session:
+        row = leave_request_repo.get_leave_request(session, actor, request_id, scope)
+        if row is None:
+            authz.not_found()
+        return _row_to_view(row)
+
+
+def list_leave_requests(
+    actor: Employee,
+    *,
+    status: str | None,
+    limit: int,
+    offset: int,
+) -> tuple[list[LeaveRequestView], int]:
+    """Return one page of Leave Requests AND the total, SCOPED to the caller (AC4).
+
+    Same three-way role→scope resolution as `get_leave_request`: an Employee receives their own, a
+    Manager their Direct Reports', an Admin all — the scope a SQL predicate, never a post-filter
+    (AD-10). `status` narrows to one state when given (the single FR-03 filter here); `limit`/
+    `offset` come from the clamped `PageParams`. A READ session. Returns `(views, total)` for the
+    route to assemble the `Page` envelope.
+    """
+    scope = _scope_for_role(actor.role)
+    with Session(get_engine(), expire_on_commit=False) as session:
+        rows, total = leave_request_repo.list_leave_requests(
+            session,
+            actor,
+            scope=scope,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+        return [_row_to_view(row) for row in rows], total

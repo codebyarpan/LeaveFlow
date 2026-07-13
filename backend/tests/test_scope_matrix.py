@@ -90,6 +90,18 @@ _SCOPE_REGISTRY: dict[tuple[str, str], frozenset[Scope]] = {
     ("GET", "/api/v1/employees/{employee_id}/balances"): frozenset(
         {Scope.REPORTS, Scope.ALL}
     ),
+    # Story 2.7 — the four Leave Request identifier endpoints where SM-3 is first *satisfied* (the
+    # integration suite proves the byte-identical 404). `GET /leave-requests/{id}` is granted to
+    # every role by its own scope (Employee `self`, Manager `reports`, Admin `all`, api-contracts
+    # §4.5); approve/reject are the Manager's alone (`reports`); cancel is the applicant's own
+    # (`self`). (`GET /leave-requests`, `POST /leave-requests`, `POST /leave-requests/preview` carry
+    # no path parameter → out of the matrix.)
+    ("GET", "/api/v1/leave-requests/{request_id}"): frozenset(
+        {Scope.SELF, Scope.REPORTS, Scope.ALL}
+    ),
+    ("POST", "/api/v1/leave-requests/{request_id}/approve"): frozenset({Scope.REPORTS}),
+    ("POST", "/api/v1/leave-requests/{request_id}/reject"): frozenset({Scope.REPORTS}),
+    ("POST", "/api/v1/leave-requests/{request_id}/cancel"): frozenset({Scope.SELF}),
 }
 
 
