@@ -20,6 +20,7 @@ import { DashboardPage } from './features/dashboard/DashboardPage'
 import { DepartmentsPage } from './features/departments/DepartmentsPage'
 import { EmployeesPage } from './features/employees/EmployeesPage'
 import { HolidaysPage } from './features/holidays/HolidaysPage'
+import { RequestPreviewPanel } from './features/leave/RequestPreviewPanel'
 import { LeaveTypesPage } from './features/leaveTypes/LeaveTypesPage'
 import { ProfilePage } from './features/profile/ProfilePage'
 
@@ -74,6 +75,11 @@ function AppShell() {
             prominent with Reserved disclosed alongside. Renders for every authenticated user
             (scope `self`); the client renders server figures as-is (AD-2). */}
         <DashboardPage />
+
+        {/* Request preview (Story 2.5): the caller picks a Leave Type and a range and sees the
+            day count, the projected balance, and the named excluded dates before submitting. The
+            server is the sole day-count authority; the client renders its figures as-is (AD-2). */}
+        <RequestPreviewPanel />
 
         {/* Self-service: renders for every authenticated user (Role "any"). The Full Name
             is editable here; every other field is read-only, and the server is the guard. */}

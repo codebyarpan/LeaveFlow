@@ -455,3 +455,47 @@ body {
   font-weight: 600;
   line-height: 1;
 }
+
+/* Request preview (Story 2.5): the day count is the prominent figure; the projected balance and
+   the named excluded dates follow. The client renders these server figures as-is (AD-2). */
+.preview-result {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.preview-days {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.preview-days-value {
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.preview-balance {
+  margin: 0;
+}
+
+.preview-excluded {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.preview-excluded li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.preview-excluded-date {
+  font-variant-numeric: tabular-nums;
+}

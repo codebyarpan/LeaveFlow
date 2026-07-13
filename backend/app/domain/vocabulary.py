@@ -121,6 +121,19 @@ LEAVE_TYPE_CODE_IN_USE = "LEAVE_TYPE_CODE_IN_USE"
 # `main.py`. The holiday calendar starts empty and is populated through the API (AD-11-adjacent).
 HOLIDAY_DATE_IN_USE = "HOLIDAY_DATE_IN_USE"
 
+# Exclusion reasons (Story 2.5, api-contracts §4.5, FR-08/AD-2). These are RESPONSE REASONS,
+# not error codes: they travel on the wire as `excluded_dates[].reason` in the preview payload,
+# naming WHY a picked date costs no Leave Day — a `WEEKEND` (Sat/Sun) or a `HOLIDAY` (a Company
+# Holiday, which also carries its `name`). They map to no HTTP status, so `main.py`'s
+# `CODE_TO_STATUS` is untouched. They belong HERE because they are enumerated strings that leave
+# the process, and AD-21 admits no enumerated literal outside this file: the instant they land in
+# `__all__`, `test_vocabulary_literals.py` enforces them, so `domain/calendar.py` (the sole
+# producer) and every test reference `vocabulary.EXCLUSION_WEEKEND`/`_HOLIDAY`, never the bare
+# string. Weekend precedence (a holiday-on-a-weekend reports once as `WEEKEND`) lives in
+# `domain/calendar.excluded_dates`, not here — these are only the two labels.
+EXCLUSION_WEEKEND = "WEEKEND"
+EXCLUSION_HOLIDAY = "HOLIDAY"
+
 # Balance code (Story 2.4, api-contracts §4.4, AD-5). `INSUFFICIENT_BALANCE` → 400 is the
 # refusal the balance-mutation module (`services/balances.py`) raises when a `reserve` or a
 # `consume_direct` would take more days than `available` (`accrued − consumed − reserved`),
@@ -150,5 +163,7 @@ __all__ = [
     "INVALID_NAME",
     "LEAVE_TYPE_CODE_IN_USE",
     "HOLIDAY_DATE_IN_USE",
+    "EXCLUSION_WEEKEND",
+    "EXCLUSION_HOLIDAY",
     "INSUFFICIENT_BALANCE",
 ]

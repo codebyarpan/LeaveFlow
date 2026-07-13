@@ -16,6 +16,7 @@ from app.api.v1 import (
     employees,
     health,
     holidays,
+    leave_requests,
     leave_types,
     me,
 )
@@ -29,3 +30,4 @@ api_v1_router.include_router(employees.router)
 api_v1_router.include_router(leave_types.router)
 api_v1_router.include_router(holidays.router)
 api_v1_router.include_router(balances.router)
+api_v1_router.include_router(leave_requests.router)

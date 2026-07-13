@@ -17,7 +17,11 @@ added to that test's EXEMPT registry with a rationale, exactly as Story 2.1 did 
 types and 1.5 for departments, rather than given a misleading unused `actor` param.
 
 `holiday_date_exists` is named with neither a read-verb prefix nor a row return — it answers a
-`bool` — precisely so it is correctly NOT a scoped-getter candidate.
+`bool` — precisely so it is correctly NOT a scoped-getter candidate. `holidays_in_range` (Story
+2.5) is named with NO `get_`/`list_`/`find_`/`fetch_` prefix for the same reason: a Company
+Holiday is organization-wide reference data (scope `all`), so it takes no `actor` and applies no
+predicate, and its name keeps it correctly outside the scoped-getter net rather than needing an
+EXEMPT entry.
 """
 
 import datetime
@@ -65,6 +69,32 @@ def get_holiday(session: Session, holiday_id: uuid.UUID) -> CompanyHoliday | Non
     mirroring `get_leave_type`/`get_department`.
     """
     return session.get(CompanyHoliday, holiday_id)
+
+
+def holidays_in_range(
+    session: Session, start: datetime.date, end: datetime.date
+) -> list[CompanyHoliday]:
+    """Return the Company Holidays whose `holiday_date` falls in `[start, end]` inclusive.
+
+    Ordered by `holiday_date, id` (the calendar's chronological order, `id` the deterministic
+    tiebreaker). The preview passes the request's range so only the relevant rows are returned,
+    not the whole calendar — but the semantics are identical either way: a holiday outside the
+    range never matches a day in `domain/calendar`'s inclusive loop.
+
+    Named with NO read-verb prefix (like `holiday_date_exists`), so it is correctly not a
+    scoped-getter candidate: a Company Holiday is organization-wide reference data (scope `all`),
+    so there is no `actor` and no per-row predicate — see the module docstring's exemption note.
+    """
+    return list(
+        session.scalars(
+            select(CompanyHoliday)
+            .where(
+                CompanyHoliday.holiday_date >= start,
+                CompanyHoliday.holiday_date <= end,
+            )
+            .order_by(CompanyHoliday.holiday_date, CompanyHoliday.id)
+        ).all()
+    )
 
 
 def holiday_date_exists(session: Session, holiday_date: datetime.date) -> bool:

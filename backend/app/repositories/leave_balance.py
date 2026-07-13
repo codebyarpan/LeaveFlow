@@ -12,14 +12,15 @@ row, upserts an accrual, or returns scoped rows.
 
 --- On the scoped-getter guard (`tests/test_scoped_getters.py`) ---
 
-`list_balances` is a `list_` getter that takes a `session`, so the guard requires it to take
-the `actor` — and it does, because `leave_balance` is EXACTLY the "first genuinely data-scoped
-resource" `repositories/scoping.py`'s docstring anticipates. It is NOT exempt like the
-reference-data getters (leave types, holidays): a balance belongs to an Employee, so a read
-that could return another Employee's balance MUST scope in SQL. `lock_balance` (`lock_` prefix,
-a write-path primitive) and `upsert_accrual` (a write) are correctly not scoped-getter
-candidates — the mutation flow is governed by AD-3's single transaction, and materialization by
-the Admin role gate, not the scope contract.
+`list_balances` and `get_balance` are `list_`/`get_` getters that take a `session`, so the guard
+requires each to take the `actor` — and both do, because `leave_balance` is EXACTLY the "first
+genuinely data-scoped resource" `repositories/scoping.py`'s docstring anticipates. Neither is
+exempt like the reference-data getters (leave types, holidays): a balance belongs to an Employee,
+so a read that could return another Employee's balance MUST scope in SQL. `get_balance` (Story
+2.5) is the preview's single-row, non-locking counterpart to `list_balances`. `lock_balance`
+(`lock_` prefix, a write-path primitive) and `upsert_accrual` (a write) are correctly not
+scoped-getter candidates — the mutation flow is governed by AD-3's single transaction, and
+materialization by the Admin role gate, not the scope contract.
 """
 
 import datetime
@@ -65,6 +66,51 @@ def lock_balance(
         )
         .with_for_update()
         .execution_options(populate_existing=True)
+    ).first()
+
+
+def get_balance(
+    session: Session,
+    actor: Employee,
+    *,
+    employee_id: uuid.UUID,
+    leave_type_id: uuid.UUID,
+    leave_year: int,
+    scope: Scope,
+) -> Row[tuple[int, int, int]] | None:
+    """Return `(accrued, reserved, consumed)` for one `(employee, leave_type, year)`, SCOPED.
+
+    The preview's advisory read (Story 2.5) — the NON-LOCKING counterpart to `lock_balance`.
+    Contrast the two deliberately: `lock_balance` is the write-path primitive that takes the row
+    `FOR UPDATE` so the balance-mutation module decides admission under the lock (AD-3); this
+    issues a plain `SELECT` and decides nothing. A preview reads, it never admits, so it MUST NOT
+    lock (AD-3, Story 2.5 AC9).
+
+    Genuinely data-scoped, exactly like `list_balances`: a balance belongs to an Employee, so it
+    joins `leave_balance → employee` and applies `employee_scope_predicate(scope, actor)` in SQL
+    — it takes the `actor` and matches the scoped-getter net by name (`get_`), and is NOT exempt.
+    The preview passes `Scope.SELF` (intrinsic to the token subject, like `GET /balances`).
+
+    Returns a single column `Row` — `(accrued, reserved, consumed)`, the three STORED quantities
+    the `api/` projection derives `available` from (DR-3) — or `None` when the pair has no row: an
+    unknown `leave_type_id`, or an Employee with no materialized current-year balance, which the
+    service turns into a byte-identical `404` (AC10). It does NOT join `leave_type` for a
+    `code`/`name` (the preview surfaces neither) and does NOT `with_for_update()`.
+    """
+    predicate = employee_scope_predicate(scope, actor)
+    return session.execute(
+        select(
+            LeaveBalance.accrued,
+            LeaveBalance.reserved,
+            LeaveBalance.consumed,
+        )
+        .join(Employee, LeaveBalance.employee_id == Employee.id)
+        .where(
+            LeaveBalance.employee_id == employee_id,
+            LeaveBalance.leave_type_id == leave_type_id,
+            LeaveBalance.leave_year == leave_year,
+            predicate,
+        )
     ).first()
 
 
