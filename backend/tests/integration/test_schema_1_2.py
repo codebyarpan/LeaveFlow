@@ -36,6 +36,7 @@ def test_exactly_the_expected_tables_exist(db_connection: Connection) -> None:
         "department",
         "employee",
         "leave_type",
+        "company_holiday",
     }
 
 

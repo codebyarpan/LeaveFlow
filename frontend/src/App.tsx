@@ -18,6 +18,7 @@ import { getToken, SESSION_EXPIRED_EVENT, setToken } from './api/session'
 import { LoginPage } from './features/auth/LoginPage'
 import { DepartmentsPage } from './features/departments/DepartmentsPage'
 import { EmployeesPage } from './features/employees/EmployeesPage'
+import { HolidaysPage } from './features/holidays/HolidaysPage'
 import { LeaveTypesPage } from './features/leaveTypes/LeaveTypesPage'
 import { ProfilePage } from './features/profile/ProfilePage'
 
@@ -79,6 +80,9 @@ function AppShell() {
         {/* Any-role list, Admin-only create form (Pattern A, like Departments). The GET is
             any-role (scope `all`); the server's 403 on POST is the real guard (Story 2.1). */}
         <LeaveTypesPage />
+        {/* Any-role list, Admin-only add/delete controls (Pattern A). The GET is any-role
+            (scope `all`); the server's 403 on POST/DELETE is the real guard (Story 2.2). */}
+        <HolidaysPage />
       </main>
 
       <footer className="shell__footer">

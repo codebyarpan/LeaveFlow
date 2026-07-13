@@ -113,6 +113,14 @@ INVALID_NAME = "INVALID_NAME"
 # seeded DATA, never constants here (AD-11): a fourth Leave Type must add no code (SM-5).
 LEAVE_TYPE_CODE_IN_USE = "LEAVE_TYPE_CODE_IN_USE"
 
+# Resource-state code (Story 2.2, api-contracts §2). `HOLIDAY_DATE_IN_USE` → 409 is the
+# refusal `POST /holidays` raises when a Company Holiday already falls on that `holiday_date`:
+# the service pre-checks the duplicate and re-raises the `UNIQUE (holiday_date)`
+# `IntegrityError` as this typed 409 (AD-5), so the constraint stays a backstop and never
+# surfaces as a raw 500 — mirroring `LEAVE_TYPE_CODE_IN_USE` (Story 2.1). Wired to 409 in
+# `main.py`. The holiday calendar starts empty and is populated through the API (AD-11-adjacent).
+HOLIDAY_DATE_IN_USE = "HOLIDAY_DATE_IN_USE"
+
 __all__ = [
     "ROLE_EMPLOYEE",
     "ROLE_MANAGER",
@@ -128,4 +136,5 @@ __all__ = [
     "FORBIDDEN_FIELD",
     "INVALID_NAME",
     "LEAVE_TYPE_CODE_IN_USE",
+    "HOLIDAY_DATE_IN_USE",
 ]

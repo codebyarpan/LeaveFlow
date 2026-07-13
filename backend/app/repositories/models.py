@@ -128,3 +128,40 @@ class LeaveType(Base):
     # `carries_forward` is false (ERD §6).
     carry_forward_cap: Mapped[int | None] = mapped_column(nullable=True)
     requires_supporting_document: Mapped[bool] = mapped_column(nullable=False)
+
+
+class CompanyHoliday(Base):
+    """A day the whole organization does not work — global, scoped to nothing (FR-10, DR-1).
+
+    A Company Holiday is a calendar `DATE`, never a `TIMESTAMPTZ` (AD-12, DR-2a): a holiday
+    is a whole day, and it is transported `YYYY-MM-DD`. The Python type is `datetime.date`
+    (which SQLAlchemy maps to PostgreSQL `DATE`), mirroring `Employee.joining_date` — a
+    `datetime.datetime` here would map to `TIMESTAMP` and violate AC2/AD-12.
+
+    The calendar is GLOBAL: there is no `department_id`, no `location`, no scope column of
+    any kind (ERD §3: "COMPANY_HOLIDAY stands alone by design … scoped to no Department or
+    location"). It stands alone — no foreign key into it, and none out of it — so there is
+    no relationship to declare.
+
+    `UNIQUE (holiday_date)` is the AD-5 backstop behind the duplicate-date refusal: the
+    service pre-checks a duplicate `holiday_date` and re-raises the `IntegrityError` as a
+    typed `409 HOLIDAY_DATE_IN_USE` (mirroring `LeaveType`'s `UNIQUE (code)`), so the
+    constraint never surfaces as a raw 500.
+
+    Like every model here, this must stay byte-for-byte faithful to its migration
+    (`0004_company_holiday`): `alembic check` emits an empty diff only while they agree, and
+    `tests/integration/test_model_migration_agreement.py` runs that check in the suite.
+    """
+
+    __tablename__ = "company_holiday"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        # PostgreSQL 18 native built-in — no extension (ERD §4.4), mirroring `LeaveType`.
+        server_default=text("uuidv7()"),
+    )
+    # `datetime.date`, never `datetime.datetime` — SQLAlchemy maps `date → DATE` (the
+    # precedent is `Employee.joining_date` above); a `datetime` would map to `TIMESTAMP`
+    # and break AC2/AD-12/DR-2a.
+    holiday_date: Mapped[datetime.date] = mapped_column(nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)

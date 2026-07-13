@@ -81,6 +81,15 @@ EXEMPT: frozenset[str] = frozenset(
         # `all`". Each carries its own "why exempt" docstring at its definition.
         "list_leave_types",
         "get_leave_type",
+        # Scope-`all` reference reads (repositories/holiday.py) — Story 2.2. A Company Holiday
+        # is organization-wide reference data (`{holiday_date, name}`), not Employee-derived;
+        # api-contracts scope is `all`, so any role reads the whole list and there is no
+        # per-row predicate to apply. Exactly the case the module docstring anticipates:
+        # "leave types and holidays follow in Epic 2, all api-contracts scope `all`". Each
+        # carries its own "why exempt" docstring at its definition. (`holiday_date_exists`
+        # returns a `bool`, so it is correctly not a scoped-getter candidate.)
+        "list_holidays",
+        "get_holiday",
     }
 )
 

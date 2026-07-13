@@ -15,8 +15,8 @@ from sqlalchemy import Connection, text
 
 # The current head revision. It moves forward one story at a time; the assertion below
 # keeps its meaning — "the database is stamped at head", not "at some revision or other".
-# Story 2.1 advanced it to `0003_leave_type`.
-HEAD_REVISION = "0003_leave_type"
+# Story 2.2 advanced it to `0004_company_holiday`.
+HEAD_REVISION = "0004_company_holiday"
 
 
 def _public_tables(db_connection: Connection) -> set[str]:
@@ -81,4 +81,39 @@ def test_leave_type_table_shipped_with_its_columns_and_unique_code(
     assert any("(code)" in definition for definition in unique_defs), (
         "leave_type must carry UNIQUE (code) — the AD-5 backstop the duplicate-code 409 "
         "story depends on"
+    )
+
+
+def test_company_holiday_table_shipped_with_its_columns_and_unique_date(
+    db_connection: Connection,
+) -> None:
+    """Story 2.2: `0004` created `company_holiday` with its three columns and `UNIQUE (holiday_date)`.
+
+    Mirrors the leave_type smoke: the table shipped with exactly the ERD's columns, and — the
+    point of AC2 — `holiday_date`'s `data_type` is `date`, closing the DATE discipline
+    (AD-12/DR-2a) at the live catalog rather than only in the model. The `UNIQUE (holiday_date)`
+    is the AD-5 backstop the duplicate-date 409 story rests on.
+    """
+    columns = {
+        row[0]: row[1]
+        for row in db_connection.execute(
+            text(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'company_holiday'"
+            )
+        )
+    }
+    assert set(columns) == {"id", "holiday_date", "name"}
+    # AC2 at the catalog: the column is a calendar DATE, never a timestamp.
+    assert columns["holiday_date"] == "date"
+
+    unique_defs = db_connection.execute(
+        text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'public.company_holiday'::regclass AND contype = 'u'"
+        )
+    ).scalars().all()
+    assert any("(holiday_date)" in definition for definition in unique_defs), (
+        "company_holiday must carry UNIQUE (holiday_date) — the AD-5 backstop the "
+        "duplicate-date 409 story depends on"
     )

@@ -76,5 +76,9 @@ CODE_TO_STATUS.update(
         # pre-checks and re-raises the UNIQUE (code) IntegrityError as this typed refusal,
         # so the constraint stays a backstop (AD-5), mirroring EMAIL_ALREADY_IN_USE.
         vocabulary.LEAVE_TYPE_CODE_IN_USE: 409,
+        # Story 2.2 — POST /holidays refuses a duplicate `holiday_date` with 409. The service
+        # pre-checks and re-raises the UNIQUE (holiday_date) IntegrityError as this typed
+        # refusal, so the constraint stays a backstop (AD-5), mirroring LEAVE_TYPE_CODE_IN_USE.
+        vocabulary.HOLIDAY_DATE_IN_USE: 409,
     }
 )

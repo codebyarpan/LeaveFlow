@@ -76,6 +76,11 @@ _SCOPE_REGISTRY: dict[tuple[str, str], frozenset[Scope]] = {
     ("POST", "/api/v1/employees/{employee_id}/deactivate"): frozenset({Scope.ALL}),
     ("PATCH", "/api/v1/departments/{department_id}"): frozenset({Scope.ALL}),
     ("DELETE", "/api/v1/departments/{department_id}"): frozenset({Scope.ALL}),
+    # Story 2.2 — the holiday calendar is organization-wide (FR-10, scope `all`): §4.3 grants
+    # `DELETE /holidays/{id}` to the Admin alone, whose scope genuinely IS everyone. Like the
+    # `/departments/{id}` writes, this is `all`, not a per-Employee scope. (`POST`/`GET
+    # /holidays` carry no path parameter, so they are out of the matrix.)
+    ("DELETE", "/api/v1/holidays/{holiday_id}"): frozenset({Scope.ALL}),
 }
 
 

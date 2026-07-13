@@ -40,4 +40,11 @@ export {
   useLeaveTypes,
 } from './leaveTypes'
 export type { CreateLeaveTypeInput, LeaveType } from './leaveTypes'
+export {
+  HOLIDAYS_QUERY_KEY,
+  useCreateHoliday,
+  useDeleteHoliday,
+  useHolidays,
+} from './holidays'
+export type { CreateHolidayInput, Holiday } from './holidays'
 export { queryClient } from './queryClient'
