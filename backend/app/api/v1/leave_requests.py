@@ -1,11 +1,14 @@
-"""The `/api/v1/leave-requests/preview` read (Story 2.5, FR-08/AD-2/AD-3).
+"""The `/api/v1/leave-requests` routes: the preview read (2.5) and the submit write (2.6).
 
 Implements: FR-08 (`POST /leave-requests/preview` — the day count, its reasoned/named
 `excluded_dates` breakdown, and the projected balance, before a request is submitted; the ONLY
-way a client obtains a Leave Day count, AD-2). AD-3 (the value is ADVISORY only — it never decides
-admission; submission re-reads the balance under lock and decides there, Story 2.6). DR-3/AD-5
-(`available_before`/`available_after` are DERIVED HERE at the projection, never read from a column
-or computed in a lower layer). AC1, AC2, AC8, AC10, AC11.
+way a client obtains a Leave Day count, AD-2 — AND `POST /leave-requests`, the atomic submission
+that reserves the days and returns the persisted row), FR-09 (managerless auto-approval, surfaced
+as a returned `status` of `APPROVED`). AD-3 (the preview is ADVISORY — it never decides admission;
+submission re-reads the balance under lock and decides there). DR-3/AD-5 (`available_before`/
+`available_after` are DERIVED HERE at the preview projection, never read from a column or computed
+in a lower layer). AD-18 (the submit response reads the STORED `leave_days`, never recomputes it).
+AC1, AC2, AC8, AC10, AC11 (2.5); AC3, AC4, AC8 (2.6).
 
 --- What this module may import, and what it may not ---
 
@@ -34,7 +37,7 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, model_validator
 
 from app.api.v1.dependencies import Actor, get_current_employee
@@ -42,15 +45,32 @@ from app.services import leave_requests as leave_requests_service
 
 router = APIRouter()
 
-# Defensive resource guard (code review 2026-07-13). The preview is deliberately permissive on
-# range *validity* — that is Story 2.6's (`INVALID_DATE_RANGE`/`SPANS_TWO_LEAVE_YEARS`, under lock)
-# — but an unbounded span would drive `count_leave_days`/`excluded_dates` through millions of
-# day-by-day iterations and serialize a vast breakdown, a CPU/memory exhaustion vector for any
-# authenticated caller. 366 (one leap Leave Year) is the tightest ceiling that never rejects a
-# legitimate single-year preview; a longer span is refused as MALFORMED INPUT (422) — the same
-# framework input-validation class that already rejects a bad UUID or unparseable date on this
-# endpoint, NOT a domain error code, so `CODE_TO_STATUS`/vocabulary stay untouched.
-_MAX_PREVIEW_SPAN_DAYS = 366
+# Defensive resource guard (code review 2026-07-13; extended to submit, Story 2.6). Both endpoints
+# are deliberately permissive on range *validity* — the real refusals are the domain's
+# (`INVALID_DATE_RANGE`/`SPANS_TWO_LEAVE_YEARS`, decided under lock on submit) — but an unbounded
+# span would drive `count_leave_days`/`excluded_dates` through millions of day-by-day iterations, a
+# CPU/memory exhaustion vector for any authenticated caller. 366 (one leap Leave Year) is the
+# tightest ceiling that never rejects a legitimate single-year request; a longer span is refused as
+# MALFORMED INPUT (422) — the same framework input-validation class that already rejects a bad UUID
+# or unparseable date, NOT a domain error code, so `CODE_TO_STATUS`/vocabulary stay untouched. The
+# domain's `SPANS_TWO_LEAVE_YEARS` (a stricter, single-year rule) is what actually governs a valid
+# submission; this cap only bounds iteration/allocation, and preview and submit share it.
+_MAX_SPAN_DAYS = 366
+
+
+def _assert_span_within_bound(start_date: datetime.date, end_date: datetime.date) -> None:
+    """Refuse an oversized forward span as malformed input (422) — the shared resource guard.
+
+    Only a forward span exceeding `_MAX_SPAN_DAYS` is refused; an inverted range yields a
+    non-positive span and is left permissive (the preview treats it as 0 days; submit refuses it
+    with the domain's `INVALID_DATE_RANGE`). Raising `ValueError` inside a `model_validator` makes
+    Pydantic surface it as the framework's input-validation error, exactly like a bad UUID.
+    """
+    span = (end_date - start_date).days + 1
+    if span > _MAX_SPAN_DAYS:
+        raise ValueError(
+            f"date range spans {span} days; at most {_MAX_SPAN_DAYS} are accepted"
+        )
 
 
 class PreviewRequest(BaseModel):
@@ -69,17 +89,11 @@ class PreviewRequest(BaseModel):
     def _span_within_bound(self) -> PreviewRequest:
         """Refuse an oversized span as malformed input (resource guard, code review 2026-07-13).
 
-        Only a forward span exceeding `_MAX_PREVIEW_SPAN_DAYS` is refused; an inverted range
-        (`end_date < start_date`) yields a non-positive span and is left permissive — it previews
-        as 0 days (AC5), exactly as `count_leave_days`/`excluded_dates` treat it. Validity refusals
-        remain Story 2.6's; this bounds only iteration/allocation.
+        Delegates to the shared `_assert_span_within_bound` — the same 366-day ceiling `submit`
+        applies. An inverted range is left permissive (it previews as 0 days, AC5); validity
+        refusals remain the submission path's.
         """
-        span = (self.end_date - self.start_date).days + 1
-        if span > _MAX_PREVIEW_SPAN_DAYS:
-            raise ValueError(
-                f"date range spans {span} days; the preview accepts at most "
-                f"{_MAX_PREVIEW_SPAN_DAYS}"
-            )
+        _assert_span_within_bound(self.start_date, self.end_date)
         return self
 
 
@@ -152,3 +166,88 @@ def preview_leave_request(
         end=body.end_date,
     )
     return _to_response(view)
+
+
+class SubmitRequest(BaseModel):
+    """The submission body — the Leave Type and the inclusive range (Story 2.6, §4.5 role any/self).
+
+    Same shape as `PreviewRequest` and the same 366-day resource cap, applied via the shared
+    validator. Everything beyond input shape — the range VALIDITY refusals and the balance decision
+    — is the service's, decided under lock; this model bounds only iteration/allocation.
+    """
+
+    leave_type_id: uuid.UUID
+    start_date: datetime.date
+    end_date: datetime.date
+
+    @model_validator(mode="after")
+    def _span_within_bound(self) -> SubmitRequest:
+        """Refuse an oversized span as malformed input (422) — the shared resource guard.
+
+        Delegates to `_assert_span_within_bound`. An inverted range is left permissive here and
+        refused by the service as `INVALID_DATE_RANGE`; the cross-year `SPANS_TWO_LEAVE_YEARS` is
+        likewise the domain's, not this cap's.
+        """
+        _assert_span_within_bound(self.start_date, self.end_date)
+        return self
+
+
+class SubmitResponse(BaseModel):
+    """The created Leave Request on the wire (Story 2.6, §4.5).
+
+    The persisted row's projectable fields: `id`, `leave_type_id`, the range, the FROZEN
+    `leave_days` (read from the stored value, never recomputed — AD-18), and `status`
+    (`PENDING` for a managed applicant, `APPROVED` for the managerless auto-approval, FR-09).
+    """
+
+    id: uuid.UUID
+    leave_type_id: uuid.UUID
+    start_date: datetime.date
+    end_date: datetime.date
+    leave_days: int
+    status: str
+
+
+def _to_submit_response(view: object) -> SubmitResponse:
+    """Project a `SubmitView` into the response, BY HAND (contract 2, the `balances.py` precedent).
+
+    Typed `object` because `api/` may import neither the service dataclass nor the ORM; the
+    submission service guarantees the fields are present. `leave_days` is read from the stored
+    value the view carries — never recomputed here (AD-18). No `from_attributes`.
+    """
+    return SubmitResponse(
+        id=view.id,
+        leave_type_id=view.leave_type_id,
+        start_date=view.start_date,
+        end_date=view.end_date,
+        leave_days=view.leave_days,
+        status=view.status,
+    )
+
+
+@router.post(
+    "/leave-requests",
+    status_code=status.HTTP_201_CREATED,
+    tags=["leave-requests"],
+)
+def submit_leave_request(
+    body: SubmitRequest,
+    caller: Actor = Depends(get_current_employee),
+) -> SubmitResponse:
+    """Submit a Leave Request for the caller (AC3, AC8, FR-08). Auth only, any role; scope `self`.
+
+    `get_current_employee`, NOT `require_role`: scope `self` is intrinsic to the token subject (an
+    Employee submits their OWN request — api-contracts §4.5, role any). No/invalid token is `401
+    TOKEN_INVALID`. The service runs the whole submission as one transaction: the range-validity
+    refusals (`INVALID_DATE_RANGE`/`PAST_DATE_RANGE`/`SPANS_TWO_LEAVE_YEARS`/`ZERO_LEAVE_DAYS`, all
+    400) and `INSUFFICIENT_BALANCE` (400, decided under the balance lock) surface through the one
+    domain-error handler. On success the response is `201` with the persisted row — a managerless
+    applicant's is already `APPROVED` (FR-09), everyone else's `PENDING`.
+    """
+    view = leave_requests_service.submit_leave_request(
+        caller,
+        leave_type_id=body.leave_type_id,
+        start=body.start_date,
+        end=body.end_date,
+    )
+    return _to_submit_response(view)

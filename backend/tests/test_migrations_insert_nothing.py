@@ -124,6 +124,7 @@ def test_the_migration_history_is_the_expected_ordered_chain() -> None:
         "0003_leave_type.py",
         "0004_company_holiday.py",
         "0005_leave_balance.py",
+        "0006_leave_request.py",
     ]
 
 

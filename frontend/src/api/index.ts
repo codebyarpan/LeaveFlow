@@ -49,6 +49,12 @@ export {
 export type { CreateHolidayInput, Holiday } from './holidays'
 export { BALANCES_QUERY_KEY, useBalances } from './balances'
 export type { Balance } from './balances'
-export { usePreviewLeaveRequest } from './leaveRequests'
-export type { ExcludedDate, LeaveRequestPreview, PreviewLeaveInput } from './leaveRequests'
+export { usePreviewLeaveRequest, useSubmitLeaveRequest } from './leaveRequests'
+export type {
+  ExcludedDate,
+  LeaveRequestPreview,
+  LeaveRequestSubmission,
+  PreviewLeaveInput,
+  SubmitLeaveInput,
+} from './leaveRequests'
 export { queryClient } from './queryClient'

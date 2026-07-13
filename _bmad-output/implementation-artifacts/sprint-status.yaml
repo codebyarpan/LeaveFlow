@@ -1,5 +1,5 @@
 # generated: 2026-07-10
-# last_updated: 2026-07-13  # story 2-5 -> done (code review)
+# last_updated: 2026-07-13  # story 2-6 -> done (code review: 3 patches applied incl. missing-balance 500->404 guard, 3 deferred, 3 dismissed)
 # project: LeaveFlow
 # project_key: NOKEY
 # tracking_system: file-system
@@ -112,7 +112,7 @@
 # ============================================================================
 
 generated: 2026-07-10
-last_updated: 2026-07-13  # story 2-5 review -> done (code review)
+last_updated: 2026-07-13  # story 2-6 in-progress -> review
 # story 1-4 moved ready-for-dev -> in-progress -> review 2026-07-11
 # story 1-4 code review 2026-07-11: 5 patches applied, review -> done
 # story 1-5 created 2026-07-11: backlog -> ready-for-dev
@@ -142,6 +142,8 @@ last_updated: 2026-07-13  # story 2-5 review -> done (code review)
 # story 2-5 created 2026-07-13: backlog -> ready-for-dev (read-only POST /leave-requests/preview: pure excluded_dates breakdown added to domain/calendar.py, WEEKEND/HOLIDAY vocabulary, non-locking scoped get_balance + holidays_in_range reads, available_before/after derived at api projection, advisory-only AD-3; frontend preview panel; no schema/migration/error-code)
 # story 2-5 moved ready-for-dev -> in-progress -> review 2026-07-13 (pure excluded_dates breakdown w/ weekend-precedence + count/excluded==span invariant; non-locking scoped get_balance + holidays_in_range; read-only preview service; available_* derived at api projection; frontend preview panel renders server figures as-is. backend pytest 309 passed incl. 8 DB-free domain + 6 integration; import-linter 7/7 kept; frontend build+lint clean; balance row provably byte-unchanged by a preview)
 # story 2-5 code review 2026-07-13: all 12 ACs satisfied (no violations); 3 patches applied (366-day preview span cap via PreviewRequest model_validator->422 resource guard, preview.reset() on form-change so no stale cost shown, leave-type select loading/empty/error state), 4 dismissed as by-design/spec-sanctioned; new span-cap test added; backend pytest 310 passed; frontend build+lint clean; review -> done
+# story 2-6 created 2026-07-13: backlog -> ready-for-dev (full write slice: 0006 migration creates leave_request + audit_entry tables; five new refusal codes (INVALID_DATE_RANGE/PAST_DATE_RANGE/SPANS_TWO_LEAVE_YEARS/ZERO_LEAVE_DAYS 400 + EMPLOYEE_HAS_PENDING_REQUESTS 409) + 4 status constants + audit vocab; one-transaction submit command reusing count_leave_days + balances.reserve/consume_direct under lock, one audit_entry same txn, AD-18 leave_days frozen; managerless auto-APPROVE via consume_direct; SM-1 concurrent double-submit test on real PostgreSQL; makes 1.6 EMPLOYEE_HAS_PENDING_REQUESTS guard executable in deactivate_employee; frontend submit slice. Open decision: AD-9 audit grants (single Postgres role -> code-layer append-only recommended))
+# story 2-6 moved ready-for-dev -> in-progress -> review 2026-07-13 (0006 leave_request + audit_entry; 4 status constants + 5 codes + audit vocab; one-transaction submit reusing count_leave_days + reserve/consume_direct under lock, one audit_entry same txn, AD-18 freeze; managerless auto-APPROVE via consume_direct; POST /leave-requests; EMPLOYEE_HAS_PENDING_REQUESTS guard executable in deactivate_employee; SM-1 concurrent double-submit on real PostgreSQL; frontend submission slice w/ immediate Available update + refusal-details. AD-9 realized code-layer append-only (single Postgres role); REASON_SUBMITTED coined; PAST_DATE_RANGE = end<today. backend pytest 332 passed; frontend build+lint clean)
 project: LeaveFlow
 project_key: NOKEY
 tracking_system: file-system
@@ -172,7 +174,7 @@ development_status:
   2-3-the-leave-day-count-one-implementation-nowhere-else: done
   2-4-leave-balances-three-quantities-one-derived: done
   2-5-see-what-a-request-will-cost-before-committing-to-it: done
-  2-6-submit-a-leave-request: backlog
+  2-6-submit-a-leave-request: done
   2-7-decide-a-request-approve-reject-cancel: backlog
   2-8-cancel-approved-leave-through-a-cancellation-request: backlog
   2-9-the-audit-trail: backlog

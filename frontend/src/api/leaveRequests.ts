@@ -1,18 +1,20 @@
 /**
- * Leave Requests, as typed hooks on `apiFetch`. Story 2.5 ships the preview.
+ * Leave Requests, as typed hooks on `apiFetch`. The preview (2.5) and the submission (2.6).
  *
  * Implements: FR-08 (frontend) — the Employee sees the day count, its named excluded dates, and
- * the projected balance BEFORE submitting. AD-2: the count, the excluded dates, each reason and
- * every holiday name arrive from the server; the client renders them and computes NO day count.
+ * the projected balance BEFORE submitting, then SUBMITS the range. AD-2: the count, the excluded
+ * dates, each reason, every holiday name AND the submitted request's `leave_days`/`status` arrive
+ * from the server; the client renders them and computes NO day count.
  *
- * A preview is a `POST` with a body, run ON DEMAND when the Employee asks — so `useMutation`, NOT
- * `useQuery` (which would auto-fetch with no input). The value is advisory only (AD-3): submission
- * (Story 2.6) re-decides under lock, so nothing here caches or reserves. `usePreviewLeaveRequest`
- * follows the `apiFetch` POST shape `useCreateLeaveType`/`useCreateHoliday` established.
+ * Both a preview and a submit are a `POST` with a body, run ON DEMAND when the Employee asks — so
+ * `useMutation`, NOT `useQuery`. The preview is advisory (AD-3); the submit is the WRITE that
+ * reserves the days, so on success it invalidates the balances query — Available falls immediately
+ * (AC8). Both follow the `apiFetch` POST shape `useCreateLeaveType`/`useCreateHoliday` established.
  */
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from './client'
+import { BALANCES_QUERY_KEY } from './balances'
 
 /**
  * The preview request body — the Leave Type and the inclusive range, mirroring the backend
@@ -55,5 +57,47 @@ export function usePreviewLeaveRequest() {
         method: 'POST',
         body: JSON.stringify(input),
       }),
+  })
+}
+
+/**
+ * The submission body — identical shape to the preview (the Leave Type and the inclusive range).
+ * The server re-decides validity and the balance under lock; the client just posts the range.
+ */
+export interface SubmitLeaveInput {
+  leave_type_id: string
+  start_date: string
+  end_date: string
+}
+
+/**
+ * The created request on the wire, mirroring the backend `SubmitResponse` (§4.5). `leave_days` is
+ * the server's FROZEN count (AD-18) and `status` is `'PENDING'` (a managed applicant) or
+ * `'APPROVED'` (managerless auto-approval, FR-09) — both rendered as received (AD-2).
+ */
+export interface LeaveRequestSubmission {
+  id: string
+  leave_type_id: string
+  start_date: string
+  end_date: string
+  leave_days: number
+  status: string
+}
+
+/**
+ * Submit a leave request (FR-08, scope `self`). On success invalidates the balances query so the
+ * caller's Available falls IMMEDIATELY (AC8): the days are now reserved (or consumed) server-side.
+ */
+export function useSubmitLeaveRequest() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: SubmitLeaveInput) =>
+      apiFetch<LeaveRequestSubmission>('/leave-requests', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: BALANCES_QUERY_KEY })
+    },
   })
 }

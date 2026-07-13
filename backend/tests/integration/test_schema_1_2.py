@@ -29,8 +29,9 @@ def test_exactly_the_expected_tables_exist(db_connection: Connection) -> None:
     Exact-set equality, the Story 1.1 pattern: a subset check would pass against a story
     that also created a `leave_request` nobody meant to add, and only equality catches it.
     The set grows one table per schema story — Story 2.1 added `leave_type`, 2.2 added
-    `company_holiday`, 2.4 added `leave_balance` — exactly as
-    `test_migrations_insert_nothing.py`'s ordered revision chain grows one file per story.
+    `company_holiday`, 2.4 added `leave_balance`, 2.6 added `leave_request` AND `audit_entry`
+    (one migration, two tables) — exactly as `test_migrations_insert_nothing.py`'s ordered
+    revision chain grows one file per story.
     """
     assert _public_tables(db_connection) == {
         "alembic_version",
@@ -39,6 +40,8 @@ def test_exactly_the_expected_tables_exist(db_connection: Connection) -> None:
         "leave_type",
         "company_holiday",
         "leave_balance",
+        "leave_request",
+        "audit_entry",
     }
 
 

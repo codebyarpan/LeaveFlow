@@ -499,3 +499,20 @@ body {
 .preview-excluded-date {
   font-variant-numeric: tabular-nums;
 }
+
+.request-submitted {
+  margin-top: 0.75rem;
+}
+
+.request-submitted p {
+  margin: 0;
+}
+
+.request-refusal-details {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}

@@ -21,7 +21,15 @@ same commit.
 import datetime
 import uuid
 
-from sqlalchemy import CheckConstraint, ForeignKey, Text, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.repositories.base import Base
@@ -250,5 +258,138 @@ class LeaveBalance(Base):
             "leave_type_id",
             "leave_year",
             name="leave_balance_employee_type_year_key",
+        ),
+    )
+
+
+class LeaveRequest(Base):
+    """One Employee's request for leave over a date range — the first lifecycle row (Story 2.6).
+
+    Implements: FR-08 (a request reserves its days at submission), AD-18 (`leave_days` is
+    computed ONCE by `domain/calendar.count_leave_days` at admission and FROZEN on the row —
+    no read path ever recomputes it), DR-10 (`leave_days` is a whole-day `INTEGER`, never a
+    float/`NUMERIC`), AD-5 (the three CHECKs are the BACKSTOP; `services/leave_requests.py` is
+    the gate — a CHECK reaching a client is a defect and a 500). SM-6.
+
+    NO `created_at` and NO `leave_year` column (ERD §2.1, §4.5): the Leave Year is derivable
+    from `start_date` (a request may not span two Leave Years, Story 2.6's `SPANS_TWO_LEAVE_YEARS`
+    refusal), and creation order comes from the UUIDv7 primary key (time-ordered by construction),
+    so neither is stored.
+
+    `status` is TEXT with a `CHECK (status IN (...))` — it IS code (four states the application
+    handles exhaustively), the AD-11 counterpart to a Leave Type being a row. The lifecycle
+    TRANSITIONS (approve/reject/cancel) are Story 2.7's guarded `UPDATE`; this story only creates
+    a row as `PENDING` (managed applicant) or `APPROVED` (managerless auto-approval, FR-09).
+
+    Like every model here, this must stay byte-for-byte faithful to its migration
+    (`0006_leave_request`): `alembic check` (run by
+    `tests/integration/test_model_migration_agreement.py`) emits an empty diff only while they
+    agree — every constraint and index `name` is byte-identical to the migration's.
+    """
+
+    __tablename__ = "leave_request"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        # PostgreSQL 18 native built-in — no extension (ERD §4.4), mirroring every table. UUIDv7
+        # is time-ordered, so the PK also carries creation order (why no `created_at`).
+        server_default=text("uuidv7()"),
+    )
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("employee.id"), nullable=False
+    )
+    leave_type_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leave_type.id"), nullable=False
+    )
+    # Whole calendar DATEs (AD-12), never TIMESTAMPs — a leave range is whole days. The
+    # inclusive `[start_date, end_date]` `count_leave_days` walks.
+    start_date: Mapped[datetime.date] = mapped_column(nullable=False)
+    end_date: Mapped[datetime.date] = mapped_column(nullable=False)
+    # The frozen Working-Day count (AD-18) — plain INTEGER (DR-10). Computed once at admission,
+    # never recomputed by a read path.
+    leave_days: Mapped[int] = mapped_column(nullable=False)
+    # One of the four PENDING/APPROVED/REJECTED/CANCELLED states, stored as TEXT with a CHECK.
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # No `created_at`, no `leave_year` — both derivable (ERD §2.1, §4.5).
+
+    __table_args__ = (
+        # AD-5 backstops — the service is the gate; names byte-identical to the migration.
+        CheckConstraint(
+            "status IN ('PENDING','APPROVED','REJECTED','CANCELLED')",
+            name="leave_request_status_check",
+        ),
+        CheckConstraint(
+            "end_date >= start_date",
+            name="leave_request_date_order_check",
+        ),
+        CheckConstraint(
+            "leave_days > 0",
+            name="leave_request_leave_days_positive_check",
+        ),
+        # The two ERD §4.4 read indexes: "my pending requests" (employee+status) and the
+        # date-range overlap scan the team calendar (Story 3.3) will walk.
+        Index("ix_leave_request_employee_status", "employee_id", "status"),
+        Index("ix_leave_request_start_end", "start_date", "end_date"),
+    )
+
+
+class AuditEntry(Base):
+    """One recorded state transition — the append-only audit trail's row (Story 2.6, AD-8).
+
+    Implements: FR-08/AD-8 (exactly ONE audit row per transition, inserted in the SAME
+    transaction as the transition; a rolled-back submit leaves neither a request row nor an
+    audit row), AD-9 (append-only — no repository exposes an update or delete for this table;
+    see the Story 2.6 Decision Point on why the guarantee is realized at the code layer, not a
+    DB `GRANT`, while the codebase runs a single Postgres role). SM-6.
+
+    `subject_id` is POLYMORPHIC — it names the row a transition is about (a `leave_request` here,
+    other subjects in later stories) — so it carries NO foreign key (ERD §2): an FK would bind
+    the trail to one table and forbid the polymorphism. `subject_type` (e.g. `LEAVE_REQUEST`)
+    disambiguates it.
+
+    `from_state` is NULLABLE — a creation has no prior state (`NULL → PENDING`/`APPROVED`).
+    `actor_id` is NULLABLE and FKs `employee.id`: it is NULL exactly when `actor_type = 'SYSTEM'`
+    (the managerless auto-approval has no human actor, FR-09), enforced by the `CHECK
+    ((actor_type = 'SYSTEM') = (actor_id IS NULL))` biconditional. `occurred_at` is a
+    `TIMESTAMP WITH TIME ZONE` (the clock lives in the service shell, AD-1) — the one instant
+    in the schema, distinct from the whole-day DATEs everywhere else.
+
+    Byte-for-byte faithful to `0006_leave_request`, like every model here — the constraint
+    `name` matches the migration's exactly.
+    """
+
+    __tablename__ = "audit_entry"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        server_default=text("uuidv7()"),
+    )
+    subject_type: Mapped[str] = mapped_column(Text, nullable=False)
+    # Polymorphic — the id of the subject row, NO foreign key (ERD §2): the trail spans subject
+    # types, and an FK would pin it to one table.
+    subject_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    # NULL for a creation — there is no prior state to record.
+    from_state: Mapped[str | None] = mapped_column(Text, nullable=True)
+    to_state: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_type: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL iff SYSTEM (the biconditional CHECK below). FKs `employee.id` when a human acted.
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("employee.id"), nullable=True
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # The one instant in the schema — a TIMESTAMP WITH TIME ZONE (ERD §2), set from the service
+    # shell (AD-1). `DateTime(timezone=True)` is explicit: a bare `Mapped[datetime]` would map to
+    # a naive `TIMESTAMP`, dropping the offset the trail must retain.
+    occurred_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        # The SYSTEM-actor biconditional: actor_type == 'SYSTEM' iff actor_id IS NULL. AD-5
+        # backstop; name byte-identical to the migration.
+        CheckConstraint(
+            "(actor_type = 'SYSTEM') = (actor_id IS NULL)",
+            name="audit_entry_system_actor_null_check",
         ),
     )

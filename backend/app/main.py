@@ -85,5 +85,15 @@ CODE_TO_STATUS.update(
         # raise this before any write, so the leave_balance CHECK constraints stay a backstop
         # (AD-5) and never surface as a raw 500. `details` names days_requested/days_available.
         vocabulary.INSUFFICIENT_BALANCE: 400,
+        # Story 2.6 — the four Leave Request range refusals (all 400) and the pending-request
+        # deactivation refusal (409). Each is a service gate raised BEFORE the write, so the
+        # `leave_request` CHECKs stay a backstop (AD-5) and never surface as a raw 500. The four
+        # 400s are pure date-property refusals decided before the balance lock;
+        # EMPLOYEE_HAS_PENDING_REQUESTS becomes executable now that `leave_request` exists (AD-22).
+        vocabulary.ZERO_LEAVE_DAYS: 400,
+        vocabulary.SPANS_TWO_LEAVE_YEARS: 400,
+        vocabulary.INVALID_DATE_RANGE: 400,
+        vocabulary.PAST_DATE_RANGE: 400,
+        vocabulary.EMPLOYEE_HAS_PENDING_REQUESTS: 409,
     }
 )

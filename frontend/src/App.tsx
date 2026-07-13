@@ -76,9 +76,10 @@ function AppShell() {
             (scope `self`); the client renders server figures as-is (AD-2). */}
         <DashboardPage />
 
-        {/* Request preview (Story 2.5): the caller picks a Leave Type and a range and sees the
-            day count, the projected balance, and the named excluded dates before submitting. The
-            server is the sole day-count authority; the client renders its figures as-is (AD-2). */}
+        {/* Request Leave (Story 2.5 preview → 2.6 submit): the caller picks a Leave Type and a
+            range, sees the day count, the projected balance and the named excluded dates, then
+            SUBMITS — after which Available falls immediately (the balances query is invalidated).
+            The server is the sole day-count authority; the client renders its figures as-is (AD-2). */}
         <RequestPreviewPanel />
 
         {/* Self-service: renders for every authenticated user (Role "any"). The Full Name

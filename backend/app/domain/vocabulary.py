@@ -147,6 +147,54 @@ EXCLUSION_HOLIDAY = "HOLIDAY"
 # 400 in `main.py`.
 INSUFFICIENT_BALANCE = "INSUFFICIENT_BALANCE"
 
+# Leave Request statuses (Story 2.6). These ARE code (AD-11): four states the application
+# handles exhaustively, stored as TEXT with a `CHECK (status IN (...))` on `leave_request` — the
+# counterpart to a Leave Type being a row. A submission is admitted as `PENDING` (a managed
+# applicant, awaiting a Manager decision) or straight to `APPROVED` (managerless auto-approval,
+# FR-09). `REJECTED`/`CANCELLED` are Story 2.7/2.8's guarded transitions, declared here now
+# because the four are one closed vocabulary and the `CHECK` names all four. The only exempt
+# copies of these literals are the model `__table_args__` CHECK and the migration DDL that mirror
+# it (like `employee.role`), exactly as the docstring above records.
+STATUS_PENDING = "PENDING"
+STATUS_APPROVED = "APPROVED"
+STATUS_REJECTED = "REJECTED"
+STATUS_CANCELLED = "CANCELLED"
+
+# Leave Request range-refusal codes (Story 2.6, api-contracts §2). Each is a SERVICE gate raised
+# BEFORE the write (AD-5), so the `leave_request` CHECKs (`end_date >= start_date`, `leave_days >
+# 0`) stay a backstop and never surface as a raw 500. All four map to 400 in `main.py`. Declared
+# here WITH their raise site, `services/leave_requests.submit_leave_request`, which now exists —
+# the same discipline that withheld these until the submission story owned them.
+#   `INVALID_DATE_RANGE`   — `end_date < start_date` (an inverted range).
+#   `PAST_DATE_RANGE`      — the range lies wholly in the past (`end_date < today`).
+#   `SPANS_TWO_LEAVE_YEARS`— `start_date.year != end_date.year`; `details` names the boundary.
+#   `ZERO_LEAVE_DAYS`      — the range contains no Working Day (`count_leave_days == 0`).
+INVALID_DATE_RANGE = "INVALID_DATE_RANGE"
+PAST_DATE_RANGE = "PAST_DATE_RANGE"
+SPANS_TWO_LEAVE_YEARS = "SPANS_TWO_LEAVE_YEARS"
+ZERO_LEAVE_DAYS = "ZERO_LEAVE_DAYS"
+
+# Employee-state code (Story 2.6, api-contracts §2). `EMPLOYEE_HAS_PENDING_REQUESTS` → 409 is the
+# refusal `deactivate_employee` raises when the target still holds a Pending Leave Request:
+# deactivating them would strand a request with no possible approval (AD-22). WITHHELD from Story
+# 1.6 because no `leave_request` table existed then — its raise site becomes executable HERE, when
+# the table it queries ships. `details` names the pending count. Wired to 409 in `main.py`.
+EMPLOYEE_HAS_PENDING_REQUESTS = "EMPLOYEE_HAS_PENDING_REQUESTS"
+
+# Audit vocabulary (Story 2.6, ERD §2, AD-8). These are enumerated strings that leave the process
+# on an `audit_entry` row, so AD-21 requires them declared HERE, once. `ACTOR_EMPLOYEE`/
+# `ACTOR_SYSTEM` are the two `actor_type` values (SYSTEM is the managerless auto-approval, with a
+# NULL `actor_id` — the biconditional CHECK); `SUBJECT_LEAVE_REQUEST` is the polymorphic
+# `subject_type` for a request row; `REASON_SUBMITTED` and `REASON_AUTO_APPROVED_NO_MANAGER` are
+# the two `reason` strings this story writes (a plain PENDING submit vs. the FR-09 auto-approval),
+# keeping `reason` NOT NULL and symmetric across both branches. They map to no HTTP status, so
+# `CODE_TO_STATUS` is untouched.
+ACTOR_EMPLOYEE = "EMPLOYEE"
+ACTOR_SYSTEM = "SYSTEM"
+SUBJECT_LEAVE_REQUEST = "LEAVE_REQUEST"
+REASON_SUBMITTED = "SUBMITTED"
+REASON_AUTO_APPROVED_NO_MANAGER = "AUTO_APPROVED_NO_MANAGER"
+
 __all__ = [
     "ROLE_EMPLOYEE",
     "ROLE_MANAGER",
@@ -166,4 +214,18 @@ __all__ = [
     "EXCLUSION_WEEKEND",
     "EXCLUSION_HOLIDAY",
     "INSUFFICIENT_BALANCE",
+    "STATUS_PENDING",
+    "STATUS_APPROVED",
+    "STATUS_REJECTED",
+    "STATUS_CANCELLED",
+    "INVALID_DATE_RANGE",
+    "PAST_DATE_RANGE",
+    "SPANS_TWO_LEAVE_YEARS",
+    "ZERO_LEAVE_DAYS",
+    "EMPLOYEE_HAS_PENDING_REQUESTS",
+    "ACTOR_EMPLOYEE",
+    "ACTOR_SYSTEM",
+    "SUBJECT_LEAVE_REQUEST",
+    "REASON_SUBMITTED",
+    "REASON_AUTO_APPROVED_NO_MANAGER",
 ]

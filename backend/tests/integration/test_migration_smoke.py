@@ -15,8 +15,8 @@ from sqlalchemy import Connection, text
 
 # The current head revision. It moves forward one story at a time; the assertion below
 # keeps its meaning — "the database is stamped at head", not "at some revision or other".
-# Story 2.4 advanced it to `0005_leave_balance`.
-HEAD_REVISION = "0005_leave_balance"
+# Story 2.6 advanced it to `0006_leave_request` (leave_request + audit_entry).
+HEAD_REVISION = "0006_leave_request"
 
 
 def _public_tables(db_connection: Connection) -> set[str]:
@@ -194,4 +194,123 @@ def test_leave_balance_table_shipped_with_its_columns_checks_and_unique(
     ), (
         "leave_balance must carry UNIQUE (employee_id, leave_type_id, leave_year) — one balance "
         "per pair per year, whose implicit index is the FOR UPDATE access path (ERD §4.4)"
+    )
+
+
+def test_leave_request_table_shipped_with_its_columns_checks_and_indexes(
+    db_connection: Connection,
+) -> None:
+    """Story 2.6: `0006` created `leave_request` with its columns, three CHECKs and two indexes.
+
+    From the live catalog: the DATE range, the INTEGER `leave_days`, the TEXT `status`; NO
+    `created_at` and NO `leave_year` (ERD §2.1/§4.5 — both derivable); the four-state status CHECK,
+    the `end_date >= start_date` order CHECK, the `leave_days > 0` CHECK (all AD-5 backstops); and
+    the two ERD §4.4 read indexes.
+    """
+    columns = {
+        row[0]: row[1]
+        for row in db_connection.execute(
+            text(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'leave_request'"
+            )
+        )
+    }
+    assert set(columns) == {
+        "id",
+        "employee_id",
+        "leave_type_id",
+        "start_date",
+        "end_date",
+        "leave_days",
+        "status",
+    }
+    # No `created_at`, no `leave_year` — both derivable (ERD §2.1, §4.5).
+    assert "created_at" not in columns
+    assert "leave_year" not in columns
+    # The range is whole calendar DATEs (AD-12); `leave_days` is INTEGER (DR-10).
+    assert columns["start_date"] == "date"
+    assert columns["end_date"] == "date"
+    assert columns["leave_days"] == "integer"
+
+    check_defs = " ".join(
+        db_connection.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'public.leave_request'::regclass AND contype = 'c'"
+            )
+        ).scalars().all()
+    )
+    # The four-state status CHECK (PostgreSQL may render `IN (...)` as `= ANY (ARRAY[...])`).
+    for state in ("PENDING", "APPROVED", "REJECTED", "CANCELLED"):
+        assert state in check_defs, f"leave_request status CHECK must admit {state}"
+    assert "end_date >= start_date" in check_defs, (
+        "leave_request must carry CHECK (end_date >= start_date) — the AD-5 backstop"
+    )
+    assert "leave_days > 0" in check_defs, (
+        "leave_request must carry CHECK (leave_days > 0) — the AD-5 backstop"
+    )
+
+    index_names = set(
+        db_connection.execute(
+            text(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE schemaname = 'public' AND tablename = 'leave_request'"
+            )
+        ).scalars().all()
+    )
+    assert "ix_leave_request_employee_status" in index_names
+    assert "ix_leave_request_start_end" in index_names
+
+
+def test_audit_entry_table_shipped_with_columns_and_system_actor_check(
+    db_connection: Connection,
+) -> None:
+    """Story 2.6: `0006` created `audit_entry` with its columns and the SYSTEM-actor CHECK.
+
+    From the live catalog: the polymorphic `subject_type`/`subject_id`, the nullable `from_state`
+    and `actor_id`, the `TIMESTAMP WITH TIME ZONE` `occurred_at` (the one instant in the schema),
+    and the `(actor_type = 'SYSTEM') = (actor_id IS NULL)` biconditional CHECK — the append-only
+    trail's guarantee that a SYSTEM row has no human actor and vice versa (AD-8).
+    """
+    columns = {
+        row[0]: (row[1], row[2])
+        for row in db_connection.execute(
+            text(
+                "SELECT column_name, data_type, is_nullable "
+                "FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'audit_entry'"
+            )
+        )
+    }
+    assert set(columns) == {
+        "id",
+        "subject_type",
+        "subject_id",
+        "from_state",
+        "to_state",
+        "actor_type",
+        "actor_id",
+        "reason",
+        "occurred_at",
+    }
+    # `from_state` and `actor_id` are the two nullable columns (a creation / a SYSTEM actor).
+    assert columns["from_state"][1] == "YES"
+    assert columns["actor_id"][1] == "YES"
+    assert columns["to_state"][1] == "NO"
+    # The one instant in the schema is a timestamptz (ERD §2), never a naive timestamp.
+    assert columns["occurred_at"][0] == "timestamp with time zone"
+
+    check_defs = " ".join(
+        db_connection.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'public.audit_entry'::regclass AND contype = 'c'"
+            )
+        ).scalars().all()
+    )
+    # The biconditional — PostgreSQL keeps the equality of the two boolean predicates.
+    assert "SYSTEM" in check_defs and "actor_id IS NULL" in check_defs, (
+        "audit_entry must carry CHECK ((actor_type = 'SYSTEM') = (actor_id IS NULL)) — the "
+        "append-only trail's SYSTEM-actor guarantee (AD-8)"
     )

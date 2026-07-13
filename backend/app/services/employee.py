@@ -13,9 +13,9 @@ The four refusals this story raises:
   - `EMAIL_ALREADY_IN_USE` (409) — a duplicate email on create or update (`G2`, Trap 3).
   - `REPORTING_CYCLE` (400) — a manager assignment that would close a cycle (`G7`, Trap 2).
   - `EMPLOYEE_HAS_DIRECT_REPORTS` (409) — deactivate/demote with active reports (`G8`, Trap 4).
-  - `EMPLOYEE_HAS_PENDING_REQUESTS` (409) — VACUOUS in Epic 1 (Trap 6): no `leave_request`
-    table exists, so no Employee can hold a Pending request. The guard, and the code, land
-    in Epic 2's Leave Request submission story, when the table it queries exists.
+  - `EMPLOYEE_HAS_PENDING_REQUESTS` (409) — deactivate an Employee holding a Pending Leave
+    Request. Withheld in Epic 1 (Trap 6): no `leave_request` table existed then. Story 2.6
+    ships the table and makes this guard EXECUTABLE in `deactivate_employee` (`AD-22`, AC7).
 
 Each write command opens exactly one `with Session(get_engine(), expire_on_commit=False)`
 and commits inside it (AD-3) — the idiom `services/auth.py` documents and
@@ -38,6 +38,7 @@ from app.domain.errors import DomainError
 from app.domain.proration import prorate_entitlement
 from app.repositories import department as department_repo
 from app.repositories import employee as employee_repo
+from app.repositories import leave_request as leave_request_repo
 from app.repositories import leave_type as leave_type_repo
 from app.repositories.engine import get_engine
 from app.repositories.models import Employee
@@ -61,6 +62,9 @@ _REPORTING_CYCLE_MESSAGE = (
 )
 _EMPLOYEE_HAS_DIRECT_REPORTS_MESSAGE = (
     "This employee still has active direct reports and cannot be deactivated or demoted."
+)
+_EMPLOYEE_HAS_PENDING_REQUESTS_MESSAGE = (
+    "This employee still has pending leave requests and cannot be deactivated."
 )
 
 
@@ -98,6 +102,21 @@ def _employee_has_direct_reports(active_direct_reports: int) -> DomainError:
         code=vocabulary.EMPLOYEE_HAS_DIRECT_REPORTS,
         message=_EMPLOYEE_HAS_DIRECT_REPORTS_MESSAGE,
         details={"active_direct_reports": active_direct_reports},
+    )
+
+
+def _employee_has_pending_requests(pending_requests: int) -> DomainError:
+    """Build the `409 EMPLOYEE_HAS_PENDING_REQUESTS` refusal, naming the count (`AD-22`, NFR-17).
+
+    Story 1.6 withheld both this code and its guard because no `leave_request` table existed; the
+    raise site becomes executable now (Story 2.6). The number is what makes the refusal actionable:
+    the Admin knows how many requests must be decided/cancelled before the Employee can be
+    deactivated. Mirrors `_employee_has_direct_reports`.
+    """
+    return DomainError(
+        code=vocabulary.EMPLOYEE_HAS_PENDING_REQUESTS,
+        message=_EMPLOYEE_HAS_PENDING_REQUESTS_MESSAGE,
+        details={"pending_requests": pending_requests},
     )
 
 
@@ -327,13 +346,17 @@ def update_employee(employee_id: uuid.UUID, changes: dict[str, object]) -> Emplo
 def deactivate_employee(employee_id: uuid.UUID) -> Employee:
     """Deactivate an Employee, refusing a nonexistent id (404) or one with active reports.
 
-    Load-or-`not_found()` (Trap 4). Guard (AC8): if the Employee still has active direct
-    reports → `409 EMPLOYEE_HAS_DIRECT_REPORTS`, row unchanged — deactivating them would
-    orphan those reports (`AD-22`).
+    Load-or-`not_found()` (Trap 4). Two guards, in a fixed, documented order — both are 409
+    and either is a valid refusal, so a deterministic order matters:
 
-    The Pending-request guard `AD-22` also requires (AC10) lands in Epic 2, when
-    `leave_request` exists: no such table exists in Epic 1, so no Employee can hold a
-    Pending request and the guard cannot execute (Trap 6). Deliberately NOT queried here.
+      1. **Active direct reports** (AC8, Story 1.6) → `409 EMPLOYEE_HAS_DIRECT_REPORTS` —
+         deactivating them would orphan those reports (`AD-22`).
+      2. **Pending leave requests** (AC7, Story 2.6) → `409 EMPLOYEE_HAS_PENDING_REQUESTS` —
+         deactivating them would strand a request already reserving days with no possible
+         approver (`AD-22`). Story 1.6 withheld this guard because no `leave_request` table
+         existed; it becomes executable HERE, now that the table ships. Checked SECOND: the
+         reports guard is the org-structure invariant, the pending-requests guard the
+         lifecycle one; reports first keeps the older, structural refusal the primary answer.
 
     On success sets `is_active=False`, commits, and returns the row so the client sees the
     new state. The row persists (AC11/AC12) — an Employee is never deleted, and the
@@ -347,6 +370,12 @@ def deactivate_employee(employee_id: uuid.UUID) -> Employee:
         active_reports = employee_repo.count_active_direct_reports(session, employee.id)
         if active_reports > 0:
             raise _employee_has_direct_reports(active_reports)
+
+        pending_requests = leave_request_repo.count_pending_for_employee(
+            session, employee.id
+        )
+        if pending_requests > 0:
+            raise _employee_has_pending_requests(pending_requests)
 
         employee_repo.deactivate_employee(employee)
         session.commit()
