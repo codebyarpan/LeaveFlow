@@ -47,6 +47,7 @@ from app.repositories.models import Employee
 from app.repositories.scoping import Scope
 from app.services import authorization as authz
 from app.services import balances
+from app.services import rollover
 
 # The four Leave Request status values, re-exported for the `api/` status filter (Story 2.7). The
 # route cannot import `domain/` (contract 2) or type the literal (`test_vocabulary_literals.py`), so
@@ -452,6 +453,7 @@ def _decide(
     mutate: _BalanceMutator,
     actor_type: str,
     actor_id: uuid.UUID | None,
+    recompute_carry_forward: bool = False,
 ) -> LeaveRequestView:
     """The one transaction every transition (approve/reject/cancel) shares (AC1–AC3, AC7, AC8).
 
@@ -473,9 +475,27 @@ def _decide(
          reserved` on reject/cancel) — `leave_year = start_date.year` (a request never spans two
          Leave Years, Story 2.6's guard). One AD-17 mutator; the transition never touches
          `leave_days` or dates.
-      4. Exactly ONE `audit_entry`, in THIS transaction (AD-8): `from_state=from_status`,
+      4. **The DR-7a carry-forward top-up, but ONLY when `recompute_carry_forward` is set** (Story
+         2.10, AC6). See the note below — this is a conditional on purpose.
+      5. Exactly ONE `audit_entry`, in THIS transaction (AD-8): `from_state=from_status`,
          `to_state=to_status`, naming the actor and the moment (`_now()`, the shell clock, AD-1).
-      5. `commit()`. Return the located row projected to a view with the NEW `status`.
+         The top-up in step 4 writes NO audit row: a balance re-derivation is not a state transition,
+         and SM-4's one-to-one count must stay literally true (AD-8).
+      6. `commit()`. Return the located row projected to a view with the NEW `status`.
+
+    --- Why the top-up is CONDITIONAL and not simply always-on (AC6) ---
+
+    Of the three transitions this function serves, exactly two RAISE `available(Y)`: reject and
+    cancel, both via `release_reserved`. Approve does NOT — `consume_reserved` shifts Reserved →
+    Consumed and leaves Available unchanged by construction, so the derived carry-forward is already
+    correct. AC6 says it outright: "approval leaves `available(Y)` unchanged, so carry-forward is
+    never clawed back."
+
+    An unconditional recompute wired in here would therefore fire on approve too. It would be a
+    no-op TODAY, by arithmetic — and that is exactly the problem: it would make the no-clawback
+    guarantee an accident of the numbers rather than a decision the code states. `reject_leave_
+    request` and `cancel_leave_request` pass `True`; `approve_leave_request` does not, and the
+    default is `False` so a future caller must opt in deliberately.
     """
     with Session(get_engine(), expire_on_commit=False) as session:
         row = leave_request_repo.get_leave_request(session, actor, request_id, scope)
@@ -498,6 +518,24 @@ def _decide(
             leave_year=row.start_date.year,
             days=row.leave_days,
         )
+
+        if recompute_carry_forward:
+            # DR-7a (Story 2.10, AC6): `release_reserved` just RAISED `available(Y)`, so the derived
+            # `carried_forward(Y+1)` — and every materialized year above it — must be re-derived and
+            # topped up. Same transaction as the release: the two are one atomic fact.
+            #
+            # `leave_year=row.start_date.year`, NOT `_current_leave_year()`. The wrong helper is
+            # defined 250 lines up in this very module and is already in scope, and reaching for it
+            # would break AC6 in AC6's own motivating scenario: a year-`Y` request rejected DURING
+            # year `Y+1` would recompute forward from `Y+1` and the top-up would never fire. The
+            # mutator two lines above used `row.start_date.year`; this uses the same value. A request
+            # never spans two Leave Years (DR-6), so `start_date.year` IS its Leave Year.
+            rollover.recompute_carry_forward(
+                session,
+                employee_id=row.employee_id,
+                leave_type_id=row.leave_type_id,
+                leave_year=row.start_date.year,
+            )
 
         audit_entry_repo.insert_audit_entry(
             session,
@@ -523,6 +561,11 @@ def approve_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveReques
     refused an Admin/Employee a 403 before this runs — AC6). Moves the days `reserved → consumed`
     via `consume_reserved` (Available unchanged, the days were committed at submission). One
     EMPLOYEE/APPROVED audit row.
+
+    It does NOT pass `recompute_carry_forward` (Story 2.10, AC6), and that omission is deliberate:
+    `consume_reserved` leaves `available(Y)` unchanged, so carry-forward is already correct and must
+    never be clawed back. Recomputing here would be a no-op by arithmetic today — and would make the
+    no-clawback guarantee an accident of the numbers rather than something the code decides.
     """
     return _decide(
         actor,
@@ -542,6 +585,10 @@ def reject_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequest
 
     Scope `REPORTS` (role gate refuses an Admin/Employee first, AC6). Releases the reservation via
     `release_reserved` (reserved down, Available back up). One EMPLOYEE/REJECTED audit row.
+
+    `recompute_carry_forward=True` (Story 2.10, DR-7a): the release RAISES `available(Y)`, so if the
+    Leave Year boundary has already been rolled, `carried_forward(Y+1)` tops up in this same
+    transaction. A year-`Y` request rejected in February is exactly the scenario DR-7a exists for.
     """
     return _decide(
         actor,
@@ -553,6 +600,7 @@ def reject_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequest
         mutate=balances.release_reserved,
         actor_type=vocabulary.ACTOR_EMPLOYEE,
         actor_id=actor.id,
+        recompute_carry_forward=True,
     )
 
 
@@ -564,6 +612,9 @@ def cancel_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequest
     `release_reserved`. One EMPLOYEE/CANCELLED audit row naming the applicant. This is the applicant
     cancelling their own PENDING request (`release_reserved`) — NOT Story 2.8's approved-leave
     cancellation via a separate table (`release_consumed`); do not conflate them.
+
+    `recompute_carry_forward=True` (Story 2.10, DR-7a): like reject, the release raises
+    `available(Y)`, so an already-rolled `carried_forward(Y+1)` tops up in this same transaction.
     """
     return _decide(
         actor,
@@ -575,6 +626,7 @@ def cancel_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequest
         mutate=balances.release_reserved,
         actor_type=vocabulary.ACTOR_EMPLOYEE,
         actor_id=actor.id,
+        recompute_carry_forward=True,
     )
 
 

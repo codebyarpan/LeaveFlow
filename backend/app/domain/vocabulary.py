@@ -239,6 +239,80 @@ REASON_CANCELLATION_REQUESTED = "CANCELLATION_REQUESTED"
 # raise site, the same discipline the range refusals followed. Wired to 409 in `main.py`.
 TRANSITION_NOT_ALLOWED = "TRANSITION_NOT_ALLOWED"
 
+# Refusal causes (Story 2.11, ERD §ADMIN_REVIEW_FLAG, AD-19/AD-20). `CAUSE_HOLIDAY_RECALCULATION` is
+# the `cause` on every `admin_review_flag` row a holiday change writes: it names WHICH REFUSAL raised
+# the flag — a holiday recalculation, as opposed to the policy recalculation Story 2.12 will add
+# beside it as `CAUSE_POLICY_RECALCULATION`. So it distinguishes the SOURCE, not the arithmetic
+# reason: a pair refused because Available would go negative and a pair refused because a request
+# priced out at zero working days both carry this one value (Open Decision #5), because both are the
+# same event — "the holiday recalculation declined to touch this pair" — and the Admin's action is
+# the same either way.
+#
+# It is a RESPONSE REASON, not an error code — the `EXCLUSION_WEEKEND`/`EXCLUSION_HOLIDAY` precedent
+# above, not the `INSUFFICIENT_BALANCE` one. It maps to no HTTP status, so `CODE_TO_STATUS` in
+# `main.py` is UNTOUCHED by this story: a refusal here does not fail the request. AD-19 requires the
+# opposite — the holiday edit COMMITS and returns `200` with a summary, and the flag is how the
+# refused pair is reported (AC4, AC5).
+#
+# ⚠️ Do NOT reuse `ZERO_LEAVE_DAYS` (above) as a cause. That is an ERROR CODE that ABORTS a
+# submission, which is exactly what AC4 forbids here: the holiday edit must still commit and the pair
+# must be FLAGGED, not the command refused.
+CAUSE_HOLIDAY_RECALCULATION = "HOLIDAY_RECALCULATION"
+
+# Refusal cause (Story 2.12, AD-19/AD-20). `CAUSE_POLICY_RECALCULATION` is the `cause` on every
+# `admin_review_flag` row a POLICY change writes — the sibling `CAUSE_HOLIDAY_RECALCULATION` above
+# reserved by name ("as opposed to the policy recalculation Story 2.12 will add beside it"). ONE
+# cause for the whole story: a pair refused because the new proration drives a spent year negative
+# carries this one value, whichever attribute moved and whichever year it surfaced in, because the
+# event is the same — "the policy recalculation declined to touch this pair" — and the Admin's action
+# is the same either way.
+#
+# Like its sibling it is a RESPONSE REASON, not an error code. It maps to no HTTP status: a refusal
+# here does NOT fail the request. AD-19 requires the opposite — the policy change COMMITS and returns
+# `200` with a summary, and the flag is how the refused pair is reported (AC5).
+CAUSE_POLICY_RECALCULATION = "POLICY_RECALCULATION"
+
+# Policy-change code (Story 2.12, api-contracts §4.3, L85). `POLICY_DISPOSITION_REQUIRED` → 400 is
+# the refusal `PATCH /leave-types/{id}` raises when a balance-affecting attribute
+# (`annual_entitlement`, `carry_forward_cap`, `carries_forward`) changes and the Admin supplied NO
+# disposition — or supplied one that is not `RECALCULATE` or `PRESERVE`. FR-06's whole point: the
+# system never silently decides what happens to balances that already exist. NOTHING is applied — not
+# the `leave_type` row, not a `policy_change` row — and `details` names the attributes that forced the
+# choice and the two values accepted (NFR-17: a refusal that does not say what to do instead is not
+# actionable).
+#
+# ⚠️ ONE code covers BOTH "absent" and "present but not one of the two". api-contracts defines no
+# second code and none is invented. Validating in the SERVICE (rather than as a Pydantic `Literal`) is
+# what makes that possible — and it is forced anyway: the moment the two DISPOSITION_* values below
+# land in `__all__`, `test_vocabulary_literals.py` makes `Literal["RECALCULATE", "PRESERVE"]`
+# unwritable anywhere under `app/`. The `PATCH /me` precedent (`INVALID_NAME`) is the shape: type the
+# field loosely, validate in the service, keep the refusal inside the `{code,message,details}`
+# envelope instead of leaking a bare Pydantic 422 (or, worse, letting an invalid value reach the
+# `CHECK (disposition IN (…))` as a raw 500 — an AD-5 violation, since the CHECK is a backstop, never
+# a gate). Wired to 400 in `main.py`.
+POLICY_DISPOSITION_REQUIRED = "POLICY_DISPOSITION_REQUIRED"
+
+# The two dispositions (Story 2.12, FR-06, AD-21). The choice an Admin is FORCED to make when a
+# policy change would affect Leave Balances that already exist. They cross the wire (in on the
+# `PATCH` body, out on `GET /policy-changes`) and they are persisted on `policy_change.disposition`
+# under a two-value CHECK, so AD-21 requires them declared HERE, once, and typed as a literal
+# nowhere else. They map to no HTTP status — they are values, not error codes — so `CODE_TO_STATUS`
+# is untouched by them.
+#
+#   `RECALCULATE` — re-derive `prorated_entitlement`, `carried_forward` and `accrued` from the NEW
+#                   `annual_entitlement`, across EVERY materialized Leave Year, under AD-19's forward
+#                   check. A pair it would drive negative is left ENTIRELY unchanged and flagged.
+#   `PRESERVE`    — leave existing balances as they were accrued under their `entitlement_basis`;
+#                   only future accruals use the new value (AC4, AD-5).
+#
+# ⚠️ `PRESERVE` is a no-op on balances for an `annual_entitlement` change and ONLY for that. Nothing
+# freezes `carry_forward_cap` — there is no cap basis, and every downstream trigger re-reads the cap
+# LIVE — so a cap or `carries_forward` change runs the forward-checked recomputation under BOTH
+# dispositions. See `services/leave_types.update_leave_type`, which is where that decision is made
+# and defended.
+DISPOSITION_RECALCULATE = "RECALCULATE"
+DISPOSITION_PRESERVE = "PRESERVE"
+
 __all__ = [
     "ROLE_EMPLOYEE",
     "ROLE_MANAGER",
@@ -279,4 +353,9 @@ __all__ = [
     "LEAVE_ALREADY_TAKEN",
     "SUBJECT_CANCELLATION_REQUEST",
     "REASON_CANCELLATION_REQUESTED",
+    "CAUSE_HOLIDAY_RECALCULATION",
+    "CAUSE_POLICY_RECALCULATION",
+    "POLICY_DISPOSITION_REQUIRED",
+    "DISPOSITION_RECALCULATE",
+    "DISPOSITION_PRESERVE",
 ]

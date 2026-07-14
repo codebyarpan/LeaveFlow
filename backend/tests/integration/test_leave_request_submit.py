@@ -21,7 +21,7 @@ import warnings
 from collections.abc import Iterator
 
 import pytest
-from sqlalchemy import Connection, delete, func, select, update
+from sqlalchemy import Connection, Engine, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.core import security
@@ -91,7 +91,7 @@ class _World:
 
 
 @pytest.fixture
-def world(db_connection: Connection) -> Iterator[_World]:
+def world(db_connection: Connection, owner_engine: Engine) -> Iterator[_World]:
     """A manager, a managed Employee, a managerless Employee and an Admin, one Leave Type (5).
 
     All are full-year joiners (joining 1 January), so a Leave Type created through the service
@@ -172,7 +172,11 @@ def world(db_connection: Connection) -> Iterator[_World]:
             leave_type_id,
         )
     finally:
-        with Session(get_engine()) as session:
+        # The OWNER engine, not `get_engine()` (Story 2.9, AD-9): the app role holds INSERT and
+        # SELECT on `audit_entry` and NEITHER UPDATE NOR DELETE, so the deletes below would be
+        # REFUSED through the app engine — which is the AC3 guarantee working, not a bug. Cleanup
+        # is a maintenance operation and runs as the owner.
+        with Session(owner_engine) as session:
             # Audit rows first (no FK to leave_request, so delete them BEFORE the requests they
             # name). subject_id catches BOTH the EMPLOYEE rows and the SYSTEM rows (NULL actor_id).
             session.execute(
@@ -513,20 +517,54 @@ def test_sm1_concurrent_double_submit_admits_exactly_one(world: _World) -> None:
 
 
 def test_audit_and_request_repositories_expose_no_update_or_delete() -> None:
-    """AC2 (AD-8/AD-9): the binding, testable form of "append-only" is the code layer.
+    """AC2 (AD-8/AD-9): "append-only" as a method surface — INSERT and SELECT, never a mutation.
 
-    With the codebase running a single Postgres role, a DB-role REVOKE UPDATE/DELETE would be a
-    no-op (an owner cannot be denied on its own table — Story 2.6 Decision Point), so THIS repository
-    surface is the guarantee.
+    WHAT THIS ASSERTION NOW GUARANTEES, AND WHY IT IS STILL WORTH ASSERTING (revised, Story 2.9).
+    Through 2.8 the expected set was exactly `{insert_audit_entry}`, and the docstring said so
+    because the codebase ran a SINGLE Postgres role: it OWNED `audit_entry`, an owner cannot be
+    denied on its own table, so a DB-role `REVOKE UPDATE, DELETE` was a no-op (Story 2.6 Decision
+    Point) and this surface was the ONLY guarantee there was.
 
-    `audit_entry` is STRICTLY append-only, FOREVER: exactly `{insert_audit_entry}`, no update, no
-    delete — unchanged by Story 2.7 (AD-8). `leave_request` gains, in Story 2.7, the two FR-03-scoped
+    Story 2.9 changed the ground under that. Migration `0008` provisions a non-owner APPLICATION
+    role granted `INSERT, SELECT` on `audit_entry` and nothing else, and `repositories/engine.py`
+    connects as it — so an UPDATE or DELETE against the trail is now refused by POSTGRES
+    (`InsufficientPrivilege`, asserted in `test_audit_entries.py`). The database is now the binding
+    guarantee (AC3).
+
+    So this test is widened, NOT deleted, and NOT routed around by putting the read in a sibling
+    module (this reflects over `audit_entry` only, so a `repositories/audit.py` would slip past it
+    silently — precisely the evasion it exists to catch). It now pins the surface at exactly
+    `{insert_audit_entry, list_audit_entries}` — an INSERT and a SELECT — and what it still
+    guarantees is real: that no update or delete method is ever WRITTEN here. That is a strictly
+    better failure than the GRANT's. A mutator added to this module fails the build at import time,
+    with a name; without this test it would fail at runtime, in production, on the first row it
+    tried to rewrite. Two layers, and the cheaper one fails first.
+
+    `leave_request` gains, in Story 2.7, the two FR-03-scoped
     reads (`get_leave_request`, `list_leave_requests`) and the SINGLE AD-4 guarded conditional
     transition (`transition_status` — an `UPDATE … WHERE status = :from`, the only sanctioned
-    mutation), alongside 2.6's `insert_leave_request` + `count_pending_for_employee`. What stays
-    forbidden — and what this assertion still guarantees — is any FREE-FORM update or delete of a
-    request row: no `update_leave_request`, no `delete_leave_request`. The exact expected set below
-    pins that: a new mutator that is not the guarded transition fails the build here.
+    mutation), alongside 2.6's `insert_leave_request` + `count_pending_for_employee`.
+
+    STORY 2.11 ADDS THE SECOND MUTATOR, AND IT IS THE ONE AD-18 ITSELF NAMES (revised again, and
+    again NOT deleted and NOT routed around). AD-18 freezes `leave_days` at submission and admits
+    exactly one exception, in as many words: "Only AD-19's recalculation may change it, and only for
+    a Pending request, or an Approved request whose dates lie wholly in the future." That exception
+    is `set_leave_days`, whose ONE sanctioned caller is
+    `services/recalculation.recalculate_for_holiday_change`, and whose eligibility rule is enforced
+    by `list_requests_covering`'s `WHERE` — the only thing that ever feeds it a request id.
+
+    The two mutators are DISJOINT, which is what keeps this surface meaningful rather than merely
+    growing: `transition_status` moves `status` and never `leave_days`; `set_leave_days` moves
+    `leave_days` and never `status`. So what stays forbidden — and what this assertion still
+    guarantees — is unchanged and exact: any FREE-FORM update or delete of a request row. No
+    `update_leave_request`, no `delete_leave_request`. A third mutator, or a general-purpose one,
+    fails the build here, which is the point.
+
+    `list_requests_covering` joins the read side as the recalculation's system-wide sweep. It is a
+    `list_` getter that takes a `session` and no `actor`, so it is registered in
+    `tests/test_scoped_getters.py`'s EXEMPT frozenset with its rationale (there is no actor whose
+    scope could narrow a recalculation sweep — narrowing it would silently skip the very Employees
+    whose balances must be corrected), rather than renamed to dodge the net.
     """
     from app.repositories import audit_entry as audit_entry_repo
     from app.repositories import leave_request as leave_request_repo
@@ -546,8 +584,10 @@ def test_audit_and_request_repositories_expose_no_update_or_delete() -> None:
         if getattr(getattr(audit_entry_repo, name), "__module__", "")
         == audit_entry_repo.__name__
     }
-    assert audit_surface == {"insert_audit_entry"}, (
-        f"audit_entry repo must expose ONLY insert (append-only, AD-8); found {audit_surface}"
+    assert audit_surface == {"insert_audit_entry", "list_audit_entries"}, (
+        "audit_entry repo must expose ONLY the append (insert_audit_entry) and the read "
+        "(list_audit_entries, Story 2.9) — never an update, never a delete (append-only, "
+        f"AD-8/AD-9); found {audit_surface}"
     )
 
     request_surface = {
@@ -559,14 +599,23 @@ def test_audit_and_request_repositories_expose_no_update_or_delete() -> None:
     assert request_surface == {
         "insert_leave_request",
         "count_pending_for_employee",
-        # Story 2.7: the two scoped reads + the ONE AD-4 guarded conditional transition. No
-        # free-form update/delete of a request row is offered — that is what stays guaranteed.
+        # Story 2.7: the two scoped reads + the AD-4 guarded conditional transition. No free-form
+        # update/delete of a request row is offered — that is what stays guaranteed.
         "get_leave_request",
         "list_leave_requests",
         "transition_status",
+        # Story 2.11: the recalculation's system-wide sweep, and the SECOND narrow mutator — the one
+        # exception AD-18 itself names (`leave_days` may change only under AD-19's recalculation,
+        # and only for a Pending request or an Approved one whose dates lie wholly in the future).
+        # Disjoint from `transition_status`: that one moves `status` and never `leave_days`; this
+        # one moves `leave_days` and never `status`.
+        "list_requests_covering",
+        "set_leave_days",
     }, (
-        "leave_request repo must expose only its create, count, scoped reads and the single AD-4 "
-        f"guarded transition — never a free-form update/delete of a request row; found {request_surface}"
+        "leave_request repo must expose only its create, count, scoped reads, the recalculation "
+        "sweep, and the TWO narrow disjoint mutators (the AD-4 guarded status transition and "
+        "AD-18's named `leave_days` exception) — never a free-form update/delete of a request row; "
+        f"found {request_surface}"
     )
 
 

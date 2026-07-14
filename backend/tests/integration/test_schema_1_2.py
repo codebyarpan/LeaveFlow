@@ -44,6 +44,19 @@ def test_exactly_the_expected_tables_exist(db_connection: Connection) -> None:
         "audit_entry",
         # Story 2.8 — the approved-leave cancellation object (AD-13, not a fifth LR status).
         "cancellation_request",
+        # Story 2.10 — the rollover's execution log. The SECOND append-only table (AD-8), kept
+        # separate from `audit_entry` precisely so SM-4's one-to-one count against Leave Request
+        # transitions stays literally true.
+        "rollover_run",
+        # Story 2.11 — the refusal register. The THIRD append-only table (AD-20), and separate from
+        # `audit_entry` for the same reason as `rollover_run`: a REFUSED recalculation transitions no
+        # Leave Request, so it writes no audit row and SM-4's count is undisturbed.
+        "admin_review_flag",
+        # Story 2.12 — the policy-change log. The FOURTH append-only table, and separate from
+        # `audit_entry` for the same reason again: a policy change transitions no Leave Request. It is
+        # the record of WHY a balance is the number it is — what changed, from what, to what, under
+        # which disposition, and when. No actor column, by decision (AD-20).
+        "policy_change",
     }
 
 

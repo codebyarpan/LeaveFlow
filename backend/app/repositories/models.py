@@ -392,6 +392,12 @@ class AuditEntry(Base):
             "(actor_type = 'SYSTEM') = (actor_id IS NULL)",
             name="audit_entry_system_actor_null_check",
         ),
+        # ERD §4.4's one index for this table, which it labels "The audit read surface (FR-16)" —
+        # added by `0008_audit_read_surface` in Story 2.9, the story that opens that read. 0006
+        # created the table and correctly said it "needs none this story": nothing read the trail
+        # then. `subject_type` leads because the trail is polymorphic — a lookup is always "the
+        # history of THIS leave_request", never a bare `subject_id`.
+        Index("ix_audit_entry_subject", "subject_type", "subject_id"),
     )
 
 
@@ -441,5 +447,211 @@ class CancellationRequest(Base):
         CheckConstraint(
             "status IN ('PENDING','APPROVED','REJECTED')",
             name="cancellation_request_status_check",
+        ),
+    )
+
+
+class RolloverRun(Base):
+    """One execution of the Leave Year rollover — the job's log, not an audit row (Story 2.10).
+
+    Implements: AD-8 (the rollover writes to `rollover_run`, a SEPARATE append-only table — had
+    its rows been written into `audit_entry`, "SM-4 would have been false the day it was written",
+    because the rollover transitions no Leave Request and SM-4 counts audit rows one-to-one
+    against transitions), AD-9 / NFR-09 (append-only is a GRANT: `0009` grants the application
+    role `INSERT` and `SELECT` on this table and NEITHER `UPDATE` NOR `DELETE`; nothing was
+    inherited, because `0008` deliberately issued no `ALTER DEFAULT PRIVILEGES`). SM-6.
+
+    Exactly the ERD's two attributes, plus the `uuidv7()` primary key every table here carries:
+
+    - `leave_year` — "The Leave Year rolled", i.e. the year the run CLOSED (`Y`), never the year
+      it opened (`Y + 1`). `python -m app.jobs.rollover --year 2026` reads 2026's balances,
+      materializes 2027's, and writes `leave_year = 2026`.
+    - `occurred_at` — "The moment." A `TIMESTAMP WITH TIME ZONE`, set from the service shell
+      (AD-1), exactly like `audit_entry.occurred_at`.
+
+    There is deliberately NO `actor` column — the ERD: "Actor is always `SYSTEM`; no column is
+    needed to say so." And deliberately NO `UNIQUE (leave_year)`: this table logs EXECUTIONS, not
+    years. A second run against the same year is legal and appends a second row; idempotence (AC5)
+    is a property of the BALANCES — `set_accrual` ASSIGNS a derived value rather than accumulating
+    one — not of this log. A unique constraint here would turn a legal no-op re-run into an
+    `IntegrityError`, which is why the ERD names none and why none is invented.
+
+    Byte-for-byte faithful to `0009_rollover_run`, like every model here — `alembic check` (run by
+    `tests/integration/test_model_migration_agreement.py`) emits an empty diff only while they agree.
+    """
+
+    __tablename__ = "rollover_run"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        server_default=text("uuidv7()"),
+    )
+    # The Leave Year ROLLED — the closing year `Y`, not `Y + 1` (ERD).
+    leave_year: Mapped[int] = mapped_column(nullable=False)
+    # The one instant on this row. `DateTime(timezone=True)` is explicit: a bare
+    # `Mapped[datetime]` would map to a naive `TIMESTAMP` and drop the offset.
+    occurred_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    # No CHECK, no UNIQUE, no index: the ERD §4.4 names none for this table, and the job's only
+    # access to it is an INSERT (there is no getter — no AC asks to read it).
+
+
+class AdminReviewFlag(Base):
+    """A recalculation that was REFUSED — the pair it left unchanged, and why (Story 2.11).
+
+    Implements: AD-19 (a recalculation that would drive Available negative leaves that Employee ×
+    Leave Type pair ENTIRELY unchanged, records a flag, and lets the rest of the operation commit —
+    the endpoint returns `200`, not an error), AD-20 (this is the THIRD append-only table and it is
+    NOT `audit_entry`: a refused recalculation transitions no Leave Request, so SM-4's one-to-one
+    count of audit rows against transitions stays literally true — the same reasoning that gave
+    `rollover_run` its own table), AD-9 / NFR-09 (append-only is a GRANT: `0010` grants the
+    application role `INSERT` and `SELECT` and NEITHER `UPDATE` NOR `DELETE`). AC1. SM-6.
+
+    The refusal is recorded per (Employee, Leave Type) PAIR, because that pair is the unit of
+    refusal — the same Employee's OTHER Leave Types still recalculate, and the rest of the holiday
+    edit still commits:
+
+    - `employee_id` + `leave_type_id` — the pair the recalculation left ENTIRELY unchanged. AC1
+      requires BOTH, so this is not the polymorphic `subject_id` the stale ERD diagram in
+      `ARCHITECTURE-SPINE.md:317-321` shows. A single opaque id could not say which Leave Type was
+      refused, and the Admin's screen (AC9) must name it.
+    - `leave_year` — the edited Leave Year, `holiday_date.year`. A flag that cannot say WHICH year
+      it refused is not actionable (Open Decision #2). Every affected request has this leave year by
+      construction: DR-6 forbids a request spanning two Leave Years, so a holiday on date `D` can
+      only fall inside a request whose Leave Year is `D.year`.
+    - `cause` — which refusal raised it (`vocabulary.CAUSE_HOLIDAY_RECALCULATION`; Story 2.12 adds
+      `CAUSE_POLICY_RECALCULATION` beside it).
+    - `occurred_at` — the moment, a `TIMESTAMPTZ` set from the service shell (AD-1), exactly like
+      `audit_entry.occurred_at` and `rollover_run.occurred_at`. The AC names `occurred_at`; the ERD
+      §ADMIN_REVIEW_FLAG says `raised_at`, and the AC is binding (Open Decision #1).
+
+    --- There is NO `resolved_at`, and there is no endpoint that clears a flag ---
+
+    Deliberately, and it is the whole of AD-20's second half. `FR-10` grants the Admin only a READ
+    of these flags; no requirement grants a RESOLVE. ERD §6 (GAP-4) states the consequence outright:
+    "there is no `resolved_at` column and no endpoint clears a flag. A flag is a permanent record
+    that a recalculation was refused … The undefined behavior is gone because the behavior no longer
+    exists." A `resolved_at` column would also silently justify the `UPDATE` grant that AC1 forbids,
+    which is how an append-only guarantee dies with every test still green.
+
+    Byte-for-byte faithful to `0010_admin_review_flag`, like every model here — `alembic check` (run
+    by `tests/integration/test_model_migration_agreement.py`) emits an empty diff only while they
+    agree.
+    """
+
+    __tablename__ = "admin_review_flag"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        server_default=text("uuidv7()"),
+    )
+    # The PAIR left unchanged. Both NOT NULL — a flag always names an Employee AND a Leave Type
+    # (AC1), which is why `list_admin_review_flags` INNER-joins both and needs no outer join.
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("employee.id"), nullable=False
+    )
+    leave_type_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leave_type.id"), nullable=False
+    )
+    # The edited Leave Year — `holiday_date.year`, never `date.today().year`.
+    leave_year: Mapped[int] = mapped_column(nullable=False)
+    # Which refusal raised it — a `vocabulary.CAUSE_*` constant, never a bare literal (AD-21).
+    cause: Mapped[str] = mapped_column(Text, nullable=False)
+    # The one instant on this row. `DateTime(timezone=True)` is explicit: a bare
+    # `Mapped[datetime]` would map to a naive `TIMESTAMP` and drop the offset.
+    occurred_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    # No CHECK on `cause` (the ERD names none, and the vocabulary is enforced in code by
+    # `test_vocabulary_literals.py`), no UNIQUE (one pair may be refused by many holiday edits),
+    # and no index (ERD §4.4 names none for this table — it is read whole, newest first).
+
+
+class PolicyChange(Base):
+    """A Leave Type policy edit, and the disposition the Admin chose for it (Story 2.12).
+
+    Implements: FR-06's last clause (an Admin changing policy is FORCED to say what happens to the
+    balances that already exist — the system never silently decides on their behalf), AD-8 (this is
+    the FOURTH append-only table and it is NOT `audit_entry`: a policy change transitions no Leave
+    Request, so SM-4's one-to-one count of audit rows against transitions stays literally true —
+    the same reasoning that gave `rollover_run` and `admin_review_flag` their own tables), AD-9 /
+    NFR-09 (append-only is a GRANT: `0011` grants the application role `INSERT` and `SELECT` and
+    NEITHER `UPDATE` NOR `DELETE`). AC1, AC3. SM-6.
+
+    ONE ROW PER CHANGED BALANCE-AFFECTING ATTRIBUTE (Open Decision #4). The table is SINGULAR —
+    `attribute`, `old_value`, `new_value` — so a `PATCH` that changes both `annual_entitlement` and
+    `carry_forward_cap` writes TWO rows, sharing one `occurred_at` and one `disposition`. A `name`
+    change writes NONE: `disposition` is NOT NULL under a two-value CHECK, and a name change has no
+    disposition to record. (The alternative — one row per PATCH with a JSON blob, or a nullable
+    disposition — is refused by AC1's CHECK, which admits exactly two values and no NULL.)
+
+    - `leave_type_id` — the Leave Type edited. NOT NULL; the row is meaningless without it.
+    - `attribute` — WHICH attribute moved (`annual_entitlement`, `carry_forward_cap`,
+      `carries_forward`). A plain column name, not an enumerated vocabulary value: these are the
+      names of columns on `leave_type`, and inventing a parallel vocabulary for them would be a
+      second source of truth for a set the schema already fixes.
+    - `old_value` / `new_value` — TEXT, because one column pair carries an `int`, a NULLABLE int and
+      a `bool` (erd.md L151-152). Stringified at the service boundary; a `None` cap is rendered as
+      the string `"null"`, so the columns stay NOT NULL and "the cap was REMOVED" is distinguishable
+      from "there never was a cap" (Open Decision #6).
+    - `disposition` — `RECALCULATE` or `PRESERVE`, under `CHECK (disposition IN (…))`. AC1's one
+      non-negotiable constraint, and a BACKSTOP, never a gate (AD-5): the service validates against
+      the two `vocabulary.DISPOSITION_*` constants and raises `400 POLICY_DISPOSITION_REQUIRED`
+      before any write, so the CHECK never surfaces as a raw 500.
+    - `occurred_at` — the moment, a `TIMESTAMPTZ` set from the service shell (AD-1), exactly like
+      `audit_entry.occurred_at`, `rollover_run.occurred_at` and `admin_review_flag.occurred_at`.
+      The AC (and the epic) name `occurred_at`; erd.md L154 says `changed_at`, and the AC is
+      binding — the same clash Story 2.11 hit (`raised_at` vs `occurred_at`) and resolved the same
+      way.
+
+    --- There is NO actor column, BY DECISION (AC1, AD-20) ---
+
+    Not an omission, and not a gap to be filled by a helpful later story. PRD §1 promises
+    attribution for LEAVE REQUEST state changes — that is what `audit_entry.actor_type`/`actor_id`
+    exist for. It promises no attribution for a configuration change, and the ERD names no actor
+    column here. The row records WHAT changed, FROM what, TO what, under WHICH disposition, and
+    WHEN; the Admin role gate on `PATCH /leave-types/{id}` already guarantees who could have caused
+    it. `rollover_run` makes the same call for the same reason ("Actor is always SYSTEM; no column
+    is needed to say so").
+
+    Byte-for-byte faithful to `0011_policy_change`, like every model here — `alembic check` (run by
+    `tests/integration/test_model_migration_agreement.py`) emits an empty diff only while they agree.
+    """
+
+    __tablename__ = "policy_change"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        server_default=text("uuidv7()"),
+    )
+    leave_type_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leave_type.id"), nullable=False
+    )
+    # The `leave_type` COLUMN NAME that moved — not an enumerated vocabulary value (see above).
+    attribute: Mapped[str] = mapped_column(Text, nullable=False)
+    # TEXT, and NOT NULL: `None` is carried as the string `"null"` (Open Decision #6), so a removed
+    # cap and an absent cap are different rows rather than the same NULL.
+    old_value: Mapped[str] = mapped_column(Text, nullable=False)
+    new_value: Mapped[str] = mapped_column(Text, nullable=False)
+    # `RECALCULATE` or `PRESERVE` — the choice the Admin was FORCED to make (FR-06).
+    disposition: Mapped[str] = mapped_column(Text, nullable=False)
+    # The one instant on this row. `DateTime(timezone=True)` is explicit: a bare
+    # `Mapped[datetime]` would map to a naive `TIMESTAMP` and drop the offset.
+    occurred_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        # AC1's one non-negotiable constraint. The database's own copy of the disposition
+        # vocabulary — the exemption `test_vocabulary_literals.py` grants a model's CHECK DDL, the
+        # same one `employee.role` and `leave_request.status` take. The GATE is
+        # `services/leave_types.py`, which raises `400 POLICY_DISPOSITION_REQUIRED` for both
+        # "absent" and "present but not one of the two"; this is only the backstop (AD-5).
+        CheckConstraint(
+            "disposition IN ('RECALCULATE', 'PRESERVE')",
+            name="policy_change_disposition_check",
         ),
     )

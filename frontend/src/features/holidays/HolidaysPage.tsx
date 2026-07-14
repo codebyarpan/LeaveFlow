@@ -1,14 +1,29 @@
 /**
- * The Company Holidays screen (Story 2.2, AC4 / AC10).
+ * The Company Holidays screen (Story 2.2 AC4/AC10; Story 2.11 AC8).
  *
  * Implements: FR-10 (frontend), AC4 (an Admin adds and deletes holidays for a Leave Year),
  * NFR-16 (the add/delete controls render only for an Admin), NFR-17 (a duplicate-date refusal
- * is shown as a human line).
+ * is shown as a human line), and — since Story 2.11 — AC8: THE ADMIN IS NEVER SHOWN AN
+ * UNQUALIFIED SUCCESS FOR AN OPERATION THAT PARTIALLY REFUSED.
+ *
+ * --- AC8, and why it is the point of the story rather than a nicety ---
+ *
+ * A holiday change is no longer CRUD. It recalculates every Leave Request it affects, and it may
+ * REFUSE a given (Employee, Leave Type) pair — leaving that balance ENTIRELY unchanged — while the
+ * rest of the operation commits and the endpoint answers `200` (AD-19). So a `200` here does NOT
+ * mean "it worked". It can mean "it worked for eleven pairs and I declined to touch three, whose
+ * balances are now knowingly stale".
+ *
+ * PRD §1: "a leave balance that is wrong is worse than a leave balance that is absent, because it
+ * will be believed." Reporting that `200` as a bare "Holiday added" is precisely how a wrong balance
+ * comes to be believed. So this screen reports BOTH numbers — recalculated AND left unchanged — and
+ * NAMES every refused pair. The permanent record lives on the Review Flags screen (AC9); this is the
+ * immediate telling, at the moment the Admin acts.
  *
  * --- The one rule this screen must never break (AC4 / AC6 / AC10) ---
  *
  * Hiding the add form and the delete buttons from a non-Admin is a USABILITY measure, never
- * the guard. The guard is the server's `403` on `POST`/`DELETE /holidays` (Task 6). So this
+ * the guard. The guard is the server's `403` on `POST`/`DELETE /holidays`. So this
  * component gates *rendering* of those controls on the role from `useMe`, and never gates the
  * *action* on it. The list itself is shown to every role — the GET is any-role (scope `all`)
  * — exactly the Departments/Leave Types pattern (Pattern A), NOT the Employees pattern that
@@ -18,16 +33,21 @@
  * may be reworded; `code` is the contract. The two wire strings this screen matches on — the
  * Admin role and the duplicate-`holiday_date` refusal — are each restated ONCE here, the
  * frontend's single home for them (AD-21), as the departments screen restates its codes.
+ *
+ * AD-2: every server figure is rendered AS RECEIVED. The counts, the Leave Year and the Leave Type
+ * codes are the server's; this screen computes no day count and parses no date.
  */
 import { type FormEvent, useState } from 'react'
 
 import { ApiError, useMe } from '../../api'
 import {
   type CreateHolidayInput,
+  type RecalculationSummary,
   useCreateHoliday,
   useDeleteHoliday,
   useHolidays,
 } from '../../api/holidays'
+import { RecalculationSummaryPanel } from '../../components/RecalculationSummaryPanel'
 
 /** The role that may add and delete holidays — the one string this screen matches on. */
 const ADMIN_ROLE = 'ADMIN'
@@ -67,6 +87,19 @@ const EMPTY_CREATE = {
   name: '',
 }
 
+/**
+ * The outcome of the last holiday change — what it corrected, and what it refused to correct.
+ *
+ * Held in state rather than read off `mutation.data` because ONE panel reports BOTH mutations: an
+ * add and a delete each produce a summary, and the Admin needs to see the one they just caused,
+ * whichever it was.
+ */
+interface LastChange {
+  /** The word the heading uses. The server does not send it; which mutation ran is the client's own fact. */
+  action: 'added' | 'deleted'
+  summary: RecalculationSummary
+}
+
 export function HolidaysPage() {
   const me = useMe()
   const holidays = useHolidays()
@@ -77,6 +110,9 @@ export function HolidaysPage() {
   // The last delete failure, scoped to the row it happened on — the same per-row shape the
   // Departments screen uses, so a failed delete is never silent (a stale row plus no feedback).
   const [deleteError, setDeleteError] = useState<{ id: string; message: string } | null>(null)
+  // The last recalculation summary (AC8). Cleared when a new change starts, so the Admin never reads
+  // the previous edit's outcome as though it belonged to the one they just made.
+  const [lastChange, setLastChange] = useState<LastChange | null>(null)
 
   const isAdmin = me.data?.role === ADMIN_ROLE
 
@@ -88,14 +124,28 @@ export function HolidaysPage() {
     // date or an empty name both stop here rather than sending a doomed request.
     if (holidayDate === '' || name === '') return
 
+    setLastChange(null)
     const input: CreateHolidayInput = { holiday_date: holidayDate, name }
-    createHoliday.mutate(input, { onSuccess: () => setCreateForm({ ...EMPTY_CREATE }) })
+    createHoliday.mutate(input, {
+      onSuccess: (result) => {
+        setCreateForm({ ...EMPTY_CREATE })
+        // The summary is CAPTURED, never discarded (AC8). An add can refuse a pair too.
+        setLastChange({ action: 'added', summary: result.recalculation })
+      },
+    })
   }
 
   function handleDelete(id: string) {
     setDeleteError(null)
+    setLastChange(null)
     deleteHoliday.mutate(id, {
-      onSuccess: () => setDeleteError(null),
+      onSuccess: (result) => {
+        setDeleteError(null)
+        // Story 2.2 discarded this result. It cannot be discarded any more: a delete is the likeliest
+        // refusal there is, and dropping the summary is how a partial refusal becomes an unqualified
+        // success on the screen (AC8).
+        setLastChange({ action: 'deleted', summary: result.recalculation })
+      },
       onError: (error) => setDeleteError({ id, message: deleteErrorMessage(error) }),
     })
   }
@@ -155,6 +205,17 @@ export function HolidaysPage() {
             )}
           </div>
         </form>
+      )}
+
+      {/* AC8. The Admin is told what the change actually did — including, and especially, what it
+          DECLINED to do. The markup itself now lives in `components/RecalculationSummaryPanel`:
+          Story 2.12's Leave Type edit refuses in exactly the same way, per the same pair, and is the
+          second caller this component was waiting for. */}
+      {lastChange && (
+        <RecalculationSummaryPanel
+          action={`Holiday ${lastChange.action}`}
+          summary={lastChange.summary}
+        />
       )}
 
       {holidays.isPending && <p className="muted">Loading holidays…</p>}

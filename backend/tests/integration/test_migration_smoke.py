@@ -16,8 +16,15 @@ from sqlalchemy import Connection, text
 # The current head revision. It moves forward one story at a time; the assertion below
 # keeps its meaning — "the database is stamped at head", not "at some revision or other".
 # Story 2.6 advanced it to `0006_leave_request` (leave_request + audit_entry); Story 2.8 to
-# `0007_cancellation_request` (the cancellation_request table).
-HEAD_REVISION = "0007_cancellation_request"
+# `0007_cancellation_request` (the cancellation_request table); Story 2.9 to
+# `0008_audit_read_surface` (the least-privilege app role + its grants + the ERD's audit index —
+# the first migration that moves PRIVILEGES rather than tables). Story 2.10 to
+# `0009_rollover_run` (the rollover's append-only execution log, with its own INSERT/SELECT grant).
+# Story 2.11 to `0010_admin_review_flag` (the refusal register — the THIRD append-only table, again
+# with its own INSERT/SELECT grant and neither UPDATE nor DELETE, because nothing is inherited).
+# Story 2.12 to `0011_policy_change` (the policy-change log — the FOURTH, same shape, plus the one
+# CHECK AC1 makes non-negotiable: `disposition IN ('RECALCULATE','PRESERVE')`).
+HEAD_REVISION = "0011_policy_change"
 
 
 def _public_tables(db_connection: Connection) -> set[str]:
@@ -314,4 +321,53 @@ def test_audit_entry_table_shipped_with_columns_and_system_actor_check(
     assert "SYSTEM" in check_defs and "actor_id IS NULL" in check_defs, (
         "audit_entry must carry CHECK ((actor_type = 'SYSTEM') = (actor_id IS NULL)) — the "
         "append-only trail's SYSTEM-actor guarantee (AD-8)"
+    )
+
+
+def test_rollover_run_table_shipped_with_exactly_its_three_columns(
+    db_connection: Connection,
+) -> None:
+    """Story 2.10: `0009` created `rollover_run` with `id`, `leave_year` and `occurred_at`.
+
+    An EXACT column set, like every smoke above. The ERD's ROLLOVER_RUN table lists only the two
+    attributes — `leave_year` ("the Leave Year rolled") and `occurred_at` ("the moment") — but
+    every table in this schema carries a `uuidv7()` primary key and this one is no exception, so
+    the set is three, not two. There is deliberately NO `actor` column: the ERD says "Actor is
+    always SYSTEM; no column is needed to say so."
+
+    And NO `UNIQUE (leave_year)`. The table logs EXECUTIONS, not years: a second run against the
+    same year appends a second row, and that is correct. Idempotence (AC5) is a property of the
+    BALANCES, not of this log — a unique constraint here would turn a legal, no-op second run into
+    an `IntegrityError`.
+    """
+    columns = {
+        row[0]: (row[1], row[2])
+        for row in db_connection.execute(
+            text(
+                "SELECT column_name, data_type, is_nullable "
+                "FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'rollover_run'"
+            )
+        )
+    }
+    assert set(columns) == {"id", "leave_year", "occurred_at"}
+    assert columns["leave_year"][0] == "integer"
+    # The moment is a timestamptz (ERD §2), never a naive timestamp — same rule as `audit_entry`.
+    assert columns["occurred_at"][0] == "timestamp with time zone"
+    assert columns["leave_year"][1] == "NO"
+    assert columns["occurred_at"][1] == "NO"
+
+    # The log records executions, so a second run for one year is legal. Assert the ABSENCE of a
+    # unique constraint on `leave_year` — the constraint a tidy-minded reader would add.
+    unique_defs = " ".join(
+        db_connection.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'public.rollover_run'::regclass AND contype = 'u'"
+            )
+        ).scalars().all()
+    )
+    assert "leave_year" not in unique_defs, (
+        "rollover_run must NOT carry UNIQUE (leave_year): a second run against the same year is "
+        "legal and appends a second row (AC5 makes it a no-op on the balances, not an error)"
     )

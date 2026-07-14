@@ -43,19 +43,49 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # --- Database -------------------------------------------------------------
+    # --- Database: TWO ROLES, ONE DATABASE (AD-9, Story 2.9) -------------------
     #
-    # DATABASE_URL is an OPTIONAL override. When absent — the normal case — the URL
-    # is built below from the POSTGRES_* parts, with the password URL-quoted. One
-    # source of truth: the operator sets POSTGRES_PASSWORD once, and a password
-    # containing `@ : / # %` cannot silently corrupt the DSN (review D2).
+    # AD-9 requires that the APPLICATION's database role hold `INSERT` and `SELECT`
+    # on `audit_entry` and NEITHER `UPDATE` NOR `DELETE`, and that "Alembic
+    # migrations run under the owner role". A single role cannot satisfy that: it
+    # would OWN `audit_entry`, and an owner cannot be denied on its own table — a
+    # `REVOKE` against it is a no-op. So there are two roles, and which is which is
+    # named here rather than left to a convention:
+    #
+    #   OWNER  (POSTGRES_USER / `database_url`)      — owns every table, runs Alembic
+    #                                                  (`alembic/env.py`), and is the
+    #                                                  only role that can maintain the
+    #                                                  schema. Never used by the app.
+    #   APP    (APP_DB_USER / `app_database_url`)    — what FastAPI connects as
+    #                                                  (`repositories/engine.py`) and
+    #                                                  what `seed` runs as. Granted
+    #                                                  exactly the privileges it needs;
+    #                                                  on `audit_entry`, INSERT+SELECT
+    #                                                  and nothing more. Migration 0008
+    #                                                  provisions the role and issues
+    #                                                  the grants, as the owner.
+    #
+    # The absence of the UPDATE/DELETE grant is what makes the audit trail append-only
+    # at the DATABASE, not merely by habit in the repository layer (AC3, NFR-09).
+    #
+    # DATABASE_URL and APP_DATABASE_URL are OPTIONAL overrides. When absent — the
+    # normal case — each URL is built below from its role's parts, with the password
+    # URL-quoted. One source of truth per role: the operator sets each password once,
+    # and a password containing `@ : / # %` cannot silently corrupt the DSN (review D2).
     #
     # psycopg 3 uses one driver name for sync and async: postgresql+psycopg://
     database_url: str | None = None
+    app_database_url: str | None = None
 
     postgres_user: str
     postgres_password: str
     postgres_db: str
+
+    # The application role. Distinct from POSTGRES_USER above, and deliberately NOT a
+    # superuser and NOT the owner of anything — see migration 0008, which creates it
+    # `NOSUPERUSER NOCREATEDB NOCREATEROLE` and grants it table-by-table.
+    app_db_user: str = "leaveflow_app"
+    app_db_password: str
     # Two vantage points, one database: host tooling reaches the published port
     # (localhost:5433, the defaults below); inside the compose network the api
     # container is handed POSTGRES_HOST=postgres, POSTGRES_PORT=5432.
@@ -81,7 +111,12 @@ class Settings(BaseSettings):
     seed_admin_full_name: str
     seed_department_name: str
 
-    @field_validator("postgres_password", "jwt_secret_key", "seed_admin_password")
+    @field_validator(
+        "postgres_password",
+        "app_db_password",
+        "jwt_secret_key",
+        "seed_admin_password",
+    )
     @classmethod
     def _reject_placeholder_secrets(cls, value: str, info) -> str:  # type: ignore[no-untyped-def]
         """An unreplaced placeholder must fail at startup, not sign tokens quietly.
@@ -96,21 +131,33 @@ class Settings(BaseSettings):
             )
         return value
 
-    @model_validator(mode="after")
-    def _build_database_url(self) -> "Settings":
-        """Fill `database_url` from the POSTGRES_* parts when no override is given.
+    def _url_for(self, user: str, password: str) -> str:
+        """Build a psycopg 3 DSN for one role against the one configured database.
 
         `quote(..., safe="")` is what makes a password containing URL-special
         characters survive the trip; hand-built URLs (the old .env DATABASE_URL)
-        had no such guarantee.
+        had no such guarantee. Host, port and database name are shared: the two roles
+        differ only in WHO connects, never in WHAT they connect to.
+        """
+        return (
+            "postgresql+psycopg://"
+            f"{quote(user, safe='')}:{quote(password, safe='')}@"
+            f"{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @model_validator(mode="after")
+    def _build_database_urls(self) -> "Settings":
+        """Fill each role's URL from its parts when no explicit override is given (AD-9).
+
+        Two URLs, one per role: the owner (Alembic, schema maintenance) and the
+        application (`repositories/engine.py`, `seed`). Each override is honoured
+        independently — setting DATABASE_URL does not silently redirect the app, and
+        setting APP_DATABASE_URL does not silently redirect the migrations.
         """
         if self.database_url is None:
-            self.database_url = (
-                "postgresql+psycopg://"
-                f"{quote(self.postgres_user, safe='')}:"
-                f"{quote(self.postgres_password, safe='')}@"
-                f"{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-            )
+            self.database_url = self._url_for(self.postgres_user, self.postgres_password)
+        if self.app_database_url is None:
+            self.app_database_url = self._url_for(self.app_db_user, self.app_db_password)
         return self
 
 
@@ -121,8 +168,8 @@ def get_settings() -> Settings:
     Cached so that `Settings()` reads the environment once. Tests that need a
     different environment call `get_settings.cache_clear()`.
 
-    `database_url` is always a `str` after construction — the model validator
-    fills it — the `| None` in its annotation exists only for the optional
-    override's sake.
+    `database_url` and `app_database_url` are always `str` after construction — the
+    model validator fills both — the `| None` in their annotations exists only for the
+    optional overrides' sake.
     """
     return Settings()  # type: ignore[call-arg]  # pydantic-settings fills from env

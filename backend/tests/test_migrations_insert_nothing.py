@@ -126,6 +126,24 @@ def test_the_migration_history_is_the_expected_ordered_chain() -> None:
         "0005_leave_balance.py",
         "0006_leave_request.py",
         "0007_cancellation_request.py",
+        # Story 2.9. Privileges and an index — `CREATE ROLE`/`GRANT` are not DML, so the
+        # guard below still passes over it: no INSERT, no UPDATE … SET, no DELETE FROM.
+        "0008_audit_read_surface.py",
+        # Story 2.10. The second append-only table (AD-8), with its OWN `GRANT INSERT, SELECT`
+        # — 0008 deliberately issued no `ALTER DEFAULT PRIVILEGES`, so nothing is inherited.
+        # Schema and a grant only: the guard below still passes over it.
+        "0009_rollover_run.py",
+        # Story 2.11. The THIRD append-only table (AD-20 — the refusal register), likewise with
+        # its OWN `GRANT INSERT, SELECT` and neither UPDATE nor DELETE: nothing is inherited, so
+        # each such table grants for itself. Schema and a grant only — no DML.
+        "0010_admin_review_flag.py",
+        # Story 2.12. The FOURTH append-only table (AD-8 — the policy-change log), likewise with its
+        # OWN `GRANT INSERT, SELECT` and neither UPDATE nor DELETE: nothing is inherited, so each
+        # such table grants for itself. Schema and a grant only — no DML. Its `CHECK (disposition IN
+        # ('RECALCULATE','PRESERVE'))` is DDL, and `alembic/versions/` is not scanned by
+        # `test_vocabulary_literals.py`, so the two enumerated values may appear there verbatim (the
+        # `employee.role` / `leave_request.status` precedent).
+        "0011_policy_change.py",
     ]
 
 

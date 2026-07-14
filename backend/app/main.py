@@ -107,5 +107,16 @@ CODE_TO_STATUS.update(
         # RESOURCE_NOT_FOUND (404) and TRANSITION_NOT_ALLOWED (409) — the other refusals this
         # story surfaces — are already wired above and are NOT redeclared.
         vocabulary.LEAVE_ALREADY_TAKEN: 400,
+        # Story 2.12 — PATCH /leave-types/{id} refuses a balance-affecting change that carries no
+        # disposition (or one that is not RECALCULATE/PRESERVE) with 400, and NOTHING is applied:
+        # not the leave_type row, not a policy_change row (FR-06 — the system never silently decides
+        # what happens to balances that already exist). A service gate raised BEFORE any write, so
+        # the `CHECK (disposition IN (…))` on `policy_change` stays a backstop (AD-5) and never
+        # surfaces as a raw 500. `details` names the attributes that forced the choice and the two
+        # values accepted (NFR-17).
+        #
+        # This is the story's ONLY change to this file. CAUSE_POLICY_RECALCULATION and the two
+        # DISPOSITION_* constants are enumerated strings, not error codes — they map to no status.
+        vocabulary.POLICY_DISPOSITION_REQUIRED: 400,
     }
 )

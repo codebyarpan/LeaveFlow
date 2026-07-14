@@ -10,6 +10,8 @@ so that the set of v1 routes is one readable list rather than a scatter of
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    admin_review_flags,
+    audit_entries,
     auth,
     balances,
     cancellation_requests,
@@ -20,6 +22,7 @@ from app.api.v1 import (
     leave_requests,
     leave_types,
     me,
+    policy_changes,
 )
 
 api_v1_router = APIRouter()
@@ -33,3 +36,6 @@ api_v1_router.include_router(holidays.router)
 api_v1_router.include_router(balances.router)
 api_v1_router.include_router(leave_requests.router)
 api_v1_router.include_router(cancellation_requests.router)
+api_v1_router.include_router(audit_entries.router)
+api_v1_router.include_router(admin_review_flags.router)
+api_v1_router.include_router(policy_changes.router)

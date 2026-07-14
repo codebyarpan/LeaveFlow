@@ -21,10 +21,13 @@ import { DepartmentsPage } from './features/departments/DepartmentsPage'
 import { EmployeesPage } from './features/employees/EmployeesPage'
 import { HolidaysPage } from './features/holidays/HolidaysPage'
 import { CancellationRequestsPanel } from './features/leave/CancellationRequestsPanel'
+import { AuditLogPanel } from './features/audit/AuditLogPanel'
+import { ReviewFlagsPanel } from './features/reviewFlags/ReviewFlagsPanel'
 import { ManagerQueuePanel } from './features/leave/ManagerQueuePanel'
 import { RequestCancellationPanel } from './features/leave/RequestCancellationPanel'
 import { RequestPreviewPanel } from './features/leave/RequestPreviewPanel'
 import { LeaveTypesPage } from './features/leaveTypes/LeaveTypesPage'
+import { PolicyChangesPanel } from './features/policyChanges/PolicyChangesPanel'
 import { ProfilePage } from './features/profile/ProfilePage'
 
 function HealthIndicator() {
@@ -103,6 +106,23 @@ function AppShell() {
             by notification or dashboard). Renders null for a non-Admin (its own useMe gate); the
             server's 403 (require_role ADMIN) is the real guard. No client day count (AD-2). */}
         <CancellationRequestsPanel />
+        <AuditLogPanel />
+
+        {/* The Admin's Review Flags screen (Story 2.11, AC9): every recalculation the system
+            REFUSED, each naming the balance it left unchanged. Not optional — a refusal recorded
+            where nobody looks is exactly the wrong figure that will be believed (PRD §1). No control
+            clears a flag: FR-10 grants a read and no requirement grants a resolve (AD-20). Renders
+            null for a non-Admin (its own useMe gate); the server's 403 (require_role ADMIN) is the
+            real guard. */}
+        <ReviewFlagsPanel />
+
+        {/* The Admin's Policy Changes screen (Story 2.12, AC12): every change to a leave type's
+            policy, its old and new value, and the disposition applied to the balances that already
+            existed. It is the record of WHY a balance is the number it is — and nothing here amends a
+            change (AD-9: the app role holds INSERT and SELECT on `policy_change`, and neither UPDATE
+            nor DELETE). Renders null for a non-Admin (its own useMe gate); the server's 403
+            (require_role ADMIN) is the real guard. */}
+        <PolicyChangesPanel />
 
         {/* Self-service: renders for every authenticated user (Role "any"). The Full Name
             is editable here; every other field is read-only, and the server is the guard. */}

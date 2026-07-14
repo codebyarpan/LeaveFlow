@@ -76,6 +76,18 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:?missing — cp .env.example .env and edit it}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
+      # The NON-OWNER application role (AD-9). This is the role the api process actually
+      # connects as — `repositories/engine.py` builds its engine from APP_DB_*, never from
+      # POSTGRES_* above. The owner credentials are still passed because `settings.py`
+      # requires them (they build the owner URL that Alembic runs under), but nothing in
+      # the request path opens a connection with them.
+      #
+      # The role itself is created, and its grants issued, by migration 0008 as the owner —
+      # so setup command two provisions it and the three-command sequence is unchanged.
+      # On `audit_entry` this role holds INSERT + SELECT and NOTHING else: the missing
+      # UPDATE/DELETE grant is what makes the trail append-only in the database (NFR-09).
+      APP_DB_USER: ${APP_DB_USER:?missing — cp .env.example .env and edit it}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?missing — cp .env.example .env and edit it}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?missing — cp .env.example .env and edit it}
       # Defaults mirror core/settings.py, so an unset optional stays a default
       # rather than arriving as an empty string that fails int parsing.

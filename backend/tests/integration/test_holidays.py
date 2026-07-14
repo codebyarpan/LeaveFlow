@@ -1,7 +1,18 @@
 """The `/api/v1/holidays` endpoints, end to end, against real PostgreSQL.
 
+⚠️ REVISED BY STORY 2.11 — the two write endpoints' success codes CHANGED, and these assertions
+were revised rather than deleted. `POST /holidays` was `201 + HolidayResponse` and is now `200 +
+{holiday, recalculation}`; `DELETE /holidays/<id>` was `204` with an empty body and is now `200`
+with the same summary shape. api-contracts §4.3 is binding ("these endpoints return `200` with a
+summary rather than failing wholesale"), and Story 2.2's own docstring predicted this change and
+assigned it to 2.11 by name. A holiday write is no longer CRUD: it recalculates every Leave Request
+the change affects, and it may REFUSE a given (Employee, Leave Type) pair while the rest of the
+operation commits (AD-19) — which is a fact no status code can carry and a `204` could not have
+carried at all. The recalculation's OWN behaviour is tested in `test_holiday_recalculation.py`;
+these tests keep proving what they always proved, at the new codes.
+
 Implements the test side of: AC3 (an Admin `POST`s a holiday and it is returned by `GET`,
-`201`; an Admin `DELETE`s it, `204`, and a subsequent `GET` no longer lists it), AC2 (the
+`200`; an Admin `DELETE`s it, `200`, and a subsequent `GET` no longer lists it), AC2 (the
 `holiday_date` is transported as `YYYY-MM-DD`), AC7 (any authenticated role reads the list,
 `200`), AC9 (the list is page-bounded and carries the `items`/`page`/`page_size`/`total`
 envelope), AC6 (a non-Admin `POST`/`DELETE` is `403 ACTION_NOT_PERMITTED`, decided server-side
@@ -165,7 +176,12 @@ def _date_is_listed(token: str, holiday_date: datetime.date) -> bool:
 
 
 def test_admin_creates_a_holiday_and_it_is_returned_by_get(callers: _Callers) -> None:
-    """AC3/AC2: `POST` by an Admin creates the row (201) and `GET` then lists it as YYYY-MM-DD."""
+    """AC3/AC2: `POST` by an Admin creates the row (200) and `GET` then lists it as YYYY-MM-DD.
+
+    `200`, not `201` — Story 2.11 (api-contracts §4.3). The holiday now travels under a `holiday`
+    key alongside the `recalculation` summary, because the write recalculates the requests it
+    affects and must be able to report what it declined to touch.
+    """
     holiday_date = _unique_date()
     try:
         created = _client.post(
@@ -174,13 +190,25 @@ def test_admin_creates_a_holiday_and_it_is_returned_by_get(callers: _Callers) ->
             headers=_auth(callers.tokens[vocabulary.ROLE_ADMIN]),
         )
 
-        assert created.status_code == 201
-        body = created.json()
+        assert created.status_code == 200
+        envelope = created.json()
+        assert set(envelope) == {"holiday", "recalculation"}
+
+        body = envelope["holiday"]
         assert set(body) == {"id", "holiday_date", "name"}
         # AC2: transported as the calendar-date string, never a timestamp.
         assert body["holiday_date"] == holiday_date.isoformat()
         assert body["name"] == "Founders' Day"
         assert uuid.UUID(body["id"])  # a real uuid was assigned and returned
+
+        # A holiday nobody's request covers recalculates nothing and refuses nobody — and it says
+        # so honestly rather than omitting the summary (AC8's "never an unqualified success" has a
+        # quiet converse: a genuinely clean run must still report its zeros).
+        assert envelope["recalculation"] == {
+            "requests_recalculated": 0,
+            "pairs_recalculated": 0,
+            "pairs_refused": [],
+        }
 
         # It is now returned by GET (any role) — walk pages to be robust to volume.
         assert _date_is_listed(callers.tokens[vocabulary.ROLE_EMPLOYEE], holiday_date)
@@ -192,7 +220,12 @@ def test_admin_creates_a_holiday_and_it_is_returned_by_get(callers: _Callers) ->
 
 
 def test_admin_deletes_a_holiday_and_it_disappears_from_get(callers: _Callers) -> None:
-    """AC3: an Admin `DELETE` removes the holiday (204) and `GET` no longer lists it."""
+    """AC3: an Admin `DELETE` removes the holiday (200 + a summary) and `GET` no longer lists it.
+
+    `200` with a body, not `204` with none — Story 2.11. A DELETE is the path most likely to refuse
+    (it makes a working day reappear, so more days are charged and a later, already-spent Leave Year
+    can be driven negative), and a `204` cannot carry the summary that says so.
+    """
     holiday_date = _unique_date()
     try:
         created = _client.post(
@@ -200,15 +233,20 @@ def test_admin_deletes_a_holiday_and_it_disappears_from_get(callers: _Callers) -
             json=_valid_body(holiday_date),
             headers=_auth(callers.tokens[vocabulary.ROLE_ADMIN]),
         )
-        assert created.status_code == 201
-        holiday_id = created.json()["id"]
+        assert created.status_code == 200
+        holiday_id = created.json()["holiday"]["id"]
 
         deleted = _client.delete(
             f"/api/v1/holidays/{holiday_id}",
             headers=_auth(callers.tokens[vocabulary.ROLE_ADMIN]),
         )
-        assert deleted.status_code == 204
-        assert deleted.content == b""  # 204 carries no body
+        assert deleted.status_code == 200
+        envelope = deleted.json()
+        # The deleted holiday is NAMED in the response — the row is gone, but the answer still says
+        # which one went, which a `204` never could.
+        assert envelope["holiday"]["id"] == holiday_id
+        assert envelope["holiday"]["holiday_date"] == holiday_date.isoformat()
+        assert envelope["recalculation"]["pairs_refused"] == []
 
         # It is gone from the list, and gone from the table.
         assert not _date_is_listed(callers.tokens[vocabulary.ROLE_ADMIN], holiday_date)
@@ -330,8 +368,8 @@ def test_a_non_admin_cannot_delete(callers: _Callers, denied_role: str) -> None:
             json=_valid_body(holiday_date),
             headers=_auth(callers.tokens[vocabulary.ROLE_ADMIN]),
         )
-        assert created.status_code == 201
-        holiday_id = created.json()["id"]
+        assert created.status_code == 200
+        holiday_id = created.json()["holiday"]["id"]
 
         response = _client.delete(
             f"/api/v1/holidays/{holiday_id}",
@@ -398,7 +436,7 @@ def test_a_duplicate_holiday_date_is_409_and_no_second_row(callers: _Callers) ->
             json=_valid_body(holiday_date, name="First name"),
             headers=_auth(callers.tokens[vocabulary.ROLE_ADMIN]),
         )
-        assert first.status_code == 201
+        assert first.status_code == 200
 
         second = _client.post(
             "/api/v1/holidays",

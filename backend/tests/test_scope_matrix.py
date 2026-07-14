@@ -116,6 +116,15 @@ _SCOPE_REGISTRY: dict[tuple[str, str], frozenset[Scope]] = {
     ("POST", "/api/v1/cancellation-requests/{cancellation_request_id}/reject"): frozenset(
         {Scope.ALL}
     ),
+    # Story 2.12 — leave policy is organization-wide CONFIGURATION (FR-06, AD-11), so §4.3 grants
+    # `PATCH /leave-types/{id}` to the Admin alone, whose scope genuinely IS everyone. Like the
+    # `/departments/{id}` writes and `DELETE /holidays/{id}`, this is `all`, not a per-Employee
+    # scope: a Leave Type belongs to no Employee, and a policy edit re-derives EVERY Employee's
+    # balance in that type — narrowing it by scope would silently skip the very people whose figures
+    # must be corrected. (`POST`/`GET /leave-types` carry no path parameter, so they stay out of the
+    # matrix; and `GET /policy-changes` carries none either, so it is out BY CONSTRUCTION — see
+    # `api/v1/policy_changes.py`.)
+    ("PATCH", "/api/v1/leave-types/{leave_type_id}"): frozenset({Scope.ALL}),
 }
 
 

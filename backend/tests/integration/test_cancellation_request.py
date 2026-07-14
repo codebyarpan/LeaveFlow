@@ -29,7 +29,7 @@ import warnings
 from collections.abc import Iterator
 
 import pytest
-from sqlalchemy import Connection, delete, func, select, update
+from sqlalchemy import Connection, Engine, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.core import security
@@ -105,7 +105,7 @@ class _World:
 
 
 @pytest.fixture
-def world(db_connection: Connection) -> Iterator[_World]:
+def world(db_connection: Connection, owner_engine: Engine) -> Iterator[_World]:
     """Two Managers (A, B), two of A's reports, one of B's, an Admin, one Leave Type (20 days).
 
     All join 1 January, so a Leave Type created through the service materializes each a full-
@@ -198,7 +198,11 @@ def world(db_connection: Connection) -> Iterator[_World]:
             admin_token,
         )
     finally:
-        with Session(get_engine()) as session:
+        # The OWNER engine, not `get_engine()` (Story 2.9, AD-9): the app role holds INSERT and
+        # SELECT on `audit_entry` and NEITHER UPDATE NOR DELETE, so the audit deletes below would
+        # be REFUSED through the app engine — which is the AC3 guarantee working, not a bug.
+        # Cleanup is a maintenance operation and runs as the owner.
+        with Session(owner_engine) as session:
             lr_ids = select(LeaveRequest.id).where(
                 LeaveRequest.leave_type_id == leave_type_id
             )

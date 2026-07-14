@@ -87,6 +87,34 @@ def code_exists(session: Session, code: str) -> bool:
     )
 
 
+def update_leave_type(
+    session: Session,
+    *,
+    leave_type: LeaveType,
+    fields: dict[str, object],
+) -> None:
+    """Apply the submitted attribute changes to a Leave Type row (Story 2.12, AC2, AC4, AC5).
+
+    A WRITE, not a getter — governed by the Admin role gate and the command's transaction, not the
+    scope contract, so it is correctly not a scoped-getter candidate.
+
+    `fields` is the caller's already-VALIDATED set of `{column_name: new_value}` — the service has
+    resolved which submitted attributes actually CHANGE a value, refused an unknown key, and (where
+    a balance-affecting attribute moved) refused a missing or invalid disposition, ALL BEFORE this
+    is called. This function does not decide; it assigns. That division is why there is no
+    `**kwargs` here: an untyped splat invites a caller to pass a column this table does not have,
+    and the resulting `AttributeError` would be a raw 500 on an Admin's edit.
+
+    `flush()`, and deliberately NOT `commit()`: the policy recalculation that follows MUST read the
+    NEW policy off this row (it re-prorates from `annual_entitlement` and re-derives carry-forward
+    from `carry_forward_cap`), and it runs in the SAME transaction (AD-3, AD-19). The service owns
+    the commit — exactly as `services/holidays.py` flushes the calendar edit before recalculating.
+    """
+    for column, value in fields.items():
+        setattr(leave_type, column, value)
+    session.flush()
+
+
 def create_leave_type(
     session: Session,
     *,

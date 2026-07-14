@@ -85,7 +85,12 @@ def seed() -> None:
     Each is inserted with `ON CONFLICT (code) DO NOTHING`, so a re-seed changes nothing.
     """
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    # The APPLICATION role, not the owner (AD-9, Story 2.9). The seed writes the same
+    # domain rows the running application writes, so it needs no privilege the app lacks
+    # — and running it under the app role makes setup command three a live check of the
+    # grants migration 0008 issued. A missing grant fails HERE, loudly, at setup, rather
+    # than at the first request that happens to touch the ungranted table.
+    engine = create_engine(settings.app_database_url)
 
     try:
         with engine.connect() as connection:

@@ -90,6 +90,54 @@ EXEMPT: frozenset[str] = frozenset(
         # returns a `bool`, so it is correctly not a scoped-getter candidate.)
         "list_holidays",
         "get_holiday",
+        # Scope-`all` reference read (repositories/audit_entry.py) — Story 2.9. The audit trail has
+        # NO Employee-owner column: `actor_id` records who ACTED, not who OWNS the row, so scoping
+        # by it would be semantically wrong — and it would hide from an Admin every transition they
+        # did not personally perform, which is the opposite of an audit trail. The gate is the ADMIN
+        # ROLE, applied in `api/` by `require_role` BEFORE the query runs (DR-13, G3: "403 — denied
+        # by role grant, decided before any row is read"); api-contracts scope is `all`, so there is
+        # no per-row predicate to apply. Carries its own "why exempt" docstring at its definition.
+        "list_audit_entries",
+        # System-wide RECALCULATION SWEEP (repositories/leave_request.py) — Story 2.11. Not an
+        # actor-facing read at all: it is the set of Leave Requests a holiday change affects, swept
+        # inside the Admin's own command. There is NO actor whose scope could narrow it — narrowing
+        # it would silently SKIP the very Employees whose balances must be corrected, which is the
+        # bug AD-19 exists to prevent. The gate is the ADMIN ROLE on `POST`/`DELETE /holidays`,
+        # applied before the sweep ever runs. Carries its own "why exempt" docstring at its
+        # definition. (Note this is the FIRST exemption granted on grounds other than the two the
+        # module docstring names — it is neither actor-resolution nor a scope-`all` reference read,
+        # but a system-wide maintenance sweep. Named as such rather than filed under a label that
+        # does not fit.)
+        "list_requests_covering",
+        # Scope-`all` reference read (repositories/admin_review_flag.py) — Story 2.11. The refusal
+        # register's api-contracts scope is `all` and the gate is the ADMIN ROLE (`require_role`,
+        # before any row is read — G3). Its `employee_id` column names the SUBJECT OF A REFUSAL, not
+        # an owner whose scope should filter the Admin's read: scoping by it would hide from an
+        # Admin the very refusals they are the only one able to act on. So there is no per-row
+        # predicate to apply. Carries its own "why exempt" docstring at its definition.
+        "list_admin_review_flags",
+        # Scope-`all` reference read (repositories/policy_change.py) — Story 2.12. The policy-change
+        # log's api-contracts scope is `all` and the gate is the ADMIN ROLE (`require_role`, before
+        # any row is read — G3). It is organization-wide CONFIGURATION HISTORY: the table has no
+        # Employee column AT ALL, so there is not even a candidate predicate to scope by, let alone a
+        # cross-Employee disclosure to guard. Squarely the second ground the module docstring names.
+        # Carries its own "why exempt" docstring at its definition.
+        "list_policy_changes",
+        # System-wide RECALCULATION SWEEP (repositories/leave_balance.py) — Story 2.12, and the SAME
+        # ground `list_requests_covering` was granted (the third one, not one of the two the module
+        # docstring names). Not an actor-facing read: it is the set of (Employee, first materialized
+        # year) pairs a POLICY change must recalculate, swept inside the Admin's own
+        # `PATCH /leave-types/{id}` command. There is NO actor whose scope could narrow it, and
+        # narrowing it would silently SKIP the very Employees whose balances the new policy must be
+        # applied to — the bug AD-19 exists to prevent, not a scoping this getter is missing. The
+        # gate is the ADMIN ROLE on the endpoint, before the sweep ever runs. Carries its own "why
+        # exempt" docstring at its definition.
+        #
+        # NOTE the contrast with its own module's `list_balances`/`get_balance`, which are NOT exempt
+        # and take the `actor`: those return ONE Employee's balances to a reader, which is exactly the
+        # Employee-derived data AD-10 governs. This one returns no balance figures at all — only the
+        # set of pairs to iterate — and it feeds a write loop, not a projection.
+        "list_pairs_for_leave_type",
     }
 )
 

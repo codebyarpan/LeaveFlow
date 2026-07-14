@@ -7,16 +7,25 @@ and Story 2.7's transition half: `get_leave_request`/`list_leave_requests` (the 
 Manager decides from) and `transition_status` (the single sanctioned AD-4 guarded conditional
 UPDATE). SM-6.
 
---- The mutation surface: an INSERT and ONE guarded conditional transition; no free-form update ---
+--- The mutation surface: an INSERT and TWO narrow, disjoint writes; no free-form update ---
 
-Through Story 2.6 this module exposed only an INSERT and a COUNT. Story 2.7 adds the lifecycle
+Through Story 2.6 this module exposed only an INSERT and a COUNT. Story 2.7 added the lifecycle
 transitions (approve/reject/cancel) as `transition_status` — a single `UPDATE … SET status = :to
-WHERE id = :id AND status = :from` (AD-4). That is the ONLY mutation of a `leave_request` row this
-module offers: there is no free-form `update_leave_request`/`delete_leave_request`. A transition is
-guarded (it matches a row only in the required `from` state) and conditional (a lost race matches
-zero rows → a clean 409, not a silent overwrite). The `audit_entry` table stays STRICTLY
-append-only — INSERT only, forever (AD-8) — a distinction Story 2.7's revision of the 2.6 surface
-test pins down.
+WHERE id = :id AND status = :from` (AD-4), guarded (it matches a row only in the required `from`
+state) and conditional (a lost race matches zero rows → a clean 409, not a silent overwrite).
+
+Story 2.11 adds the SECOND, and AD-18 names it as the one exception it admits: `set_leave_days`,
+the recalculation of a request's frozen `leave_days` when the holiday calendar changes under it
+("Only AD-19's recalculation may change it, and only for a Pending request, or an Approved request
+whose dates lie wholly in the future"). Its ONE sanctioned caller is
+`services/recalculation.recalculate_for_holiday_change`.
+
+The two are DISJOINT — `transition_status` moves `status` and never `leave_days`; `set_leave_days`
+moves `leave_days` and never `status` — and together they remain the whole mutation surface: there
+is still no free-form `update_leave_request` and no `delete_leave_request`. The `audit_entry` table
+stays STRICTLY append-only — INSERT only, forever (AD-8) — a distinction Story 2.7's revision of the
+2.6 surface test pins down, and one a recalculation does not disturb: it writes ZERO audit rows,
+because a balance re-derivation is not a state transition.
 
 --- Why `count_pending_for_employee` is named `count_`, not `get_`/`list_` ---
 
@@ -32,7 +41,7 @@ precedent). `transition_status` is a write governed by the command's transaction
 import datetime
 import uuid
 
-from sqlalchemy import Row, func, select, update
+from sqlalchemy import Row, and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.domain import vocabulary
@@ -206,6 +215,116 @@ def list_leave_requests(
     return rows, total
 
 
+def list_requests_covering(
+    session: Session, *, on_date: datetime.date, today: datetime.date
+) -> list[LeaveRequest]:
+    """Every Leave Request still HOLDING DAYS whose range contains `on_date` (AC2, AC3, Story 2.11).
+
+    The holiday-change recalculation's affected-request sweep (AD-19). `start_date <= :on_date AND
+    end_date >= :on_date` is exactly what `ix_leave_request_start_end` (migration `0006`) indexes,
+    so no second index is created for it.
+
+    WHICH REQUESTS HOLD DAYS, and why the others are never touched:
+
+      * `PENDING` — holds Reserved days. Recalculated (AC2).
+      * `APPROVED` AND `start_date > today` — holds Consumed days, and its dates lie WHOLLY IN THE
+        FUTURE. Recalculated (AC3).
+      * `APPROVED` and already started or past — NEVER recalculated. AD-18 grants recalculation only
+        to a request "whose dates lie wholly in the future" and forbids it for one "whose dates have
+        already passed"; an IN-PROGRESS request (`start_date <= today <= end_date`) is neither, and
+        the literal reading of the only grant AD-18 makes is `start_date > today` (Open Decision #4).
+        Note this is deliberately NOT Story 2.8's `is_wholly_past` predicate (`end_date < today`) —
+        the two rules answer genuinely different questions, and reusing that one here would silently
+        recalculate leave somebody is currently taking.
+      * `REJECTED` / `CANCELLED` — settled, holding no days at all. Nothing to recalculate.
+
+    `today` is passed IN, never read from a clock here: the clock lives in `services/`, never in
+    `repositories/` or `domain/` (AD-1). That is also what lets the tests fix "today" without
+    mocking one.
+
+    WHY THIS GETTER IS EXEMPT FROM THE SCOPED-GETTER CONTRACT (`tests/test_scoped_getters.py`):
+    it is a SYSTEM-WIDE RECALCULATION SWEEP, not an actor-facing read. There is no actor whose scope
+    could narrow it — narrowing it would silently SKIP the very Employees whose balances must be
+    corrected, which is the bug AD-19 exists to prevent. The gate is the ADMIN ROLE on the holiday
+    endpoint, applied before the sweep ever runs. It is registered in that test's EXEMPT frozenset
+    with this rationale, rather than dodged by renaming it to a non-`list_` verb — Story 2.9's review
+    settled that a surface claim gets revised with a rationale, never routed around.
+
+    Returns whole ORM rows (not the `_READ_COLUMNS` projection): the recalculation must READ each
+    row's dates and `leave_days` and then WRITE a new `leave_days` through `set_leave_days`. Ordered
+    by `(employee_id, leave_type_id, id)` so the service's pair grouping — and therefore its balance
+    LOCK ORDER — is deterministic (AD-3): a holiday edit locks every affected balance row, and a
+    nondeterministic order is how two concurrent edits deadlock.
+    """
+    return list(
+        session.scalars(
+            select(LeaveRequest)
+            .where(
+                LeaveRequest.start_date <= on_date,
+                LeaveRequest.end_date >= on_date,
+                or_(
+                    LeaveRequest.status == vocabulary.STATUS_PENDING,
+                    and_(
+                        LeaveRequest.status == vocabulary.STATUS_APPROVED,
+                        LeaveRequest.start_date > today,
+                    ),
+                ),
+            )
+            .order_by(
+                LeaveRequest.employee_id,
+                LeaveRequest.leave_type_id,
+                LeaveRequest.id,
+            )
+        ).all()
+    )
+
+
+def set_leave_days(
+    session: Session, *, request_id: uuid.UUID, leave_days: int
+) -> None:
+    """Re-derive a request's frozen `leave_days` — the SECOND sanctioned mutation (AD-18, AD-19).
+
+    AD-18 freezes `leave_days` at submission and names EXACTLY ONE exception, which this is:
+
+        "Only AD-19's recalculation may change it, and only for a Pending request, or an Approved
+        request whose dates lie wholly in the future."
+
+    So this has ONE sanctioned caller — `services/recalculation.recalculate_for_holiday_change` —
+    and the eligibility rule is enforced by `list_requests_covering`'s `WHERE`, which is the only
+    thing that ever feeds it a `request_id`. A read path NEVER recomputes `leave_days` (AD-18); this
+    is a write, in the recalculation's own transaction.
+
+    ⚠️ `leave_days` and the balance's `reserved`/`consumed` MUST move in the SAME transaction. This
+    is `deferred-work.md:56`, written down from the Story 2.7 review and describing this story by
+    name: lower a Pending request's `reserved` without rewriting its `leave_days` to match, and the
+    next `approve` passes the `WHERE status = PENDING` guard, then `consume_reserved(days)` finds
+    `days > reserved` and raises a bare `ValueError` — a raw 500. The caller writes both, always.
+
+    ⚠️ `CHECK (leave_days > 0)` is a BACKSTOP, not this function's gate (AD-5). Adding a holiday can
+    price a one-working-day request down to ZERO working days, and firing that CHECK here would be a
+    raw 500 AND an AC5 violation (the failure discovered by a constraint, not by the forward check).
+    The caller REFUSES the pair before calling this — see `services/recalculation.py`. The assertion
+    below is a loud programming-error guard for a caller that skipped that check; it is not the
+    story's refusal path, and it is unreachable from the one sanctioned caller.
+
+    `flush()`, never `commit()`: the holiday command owns the one transaction (AD-3).
+    """
+    if leave_days <= 0:
+        raise ValueError(
+            f"set_leave_days({leave_days}) is not positive — the CHECK (leave_days > 0) backstop "
+            "would fire as a raw 500. A request recalculated to zero working days must be REFUSED "
+            "by the forward check and flagged (AD-19), never written (AC5)."
+        )
+
+    session.execute(
+        update(LeaveRequest)
+        .where(LeaveRequest.id == request_id)
+        .values(leave_days=leave_days)
+        .execution_options(synchronize_session=False)
+    )
+    session.flush()
+
+
 def transition_status(
     session: Session,
     *,
@@ -215,8 +334,15 @@ def transition_status(
 ) -> int:
     """The AD-4 guarded conditional transition — `UPDATE … WHERE id = :id AND status = :from`.
 
-    The ONE sanctioned mutation of a `leave_request` row (there is no free-form update/delete). It
-    matches the row only while it is still in `from_status`, so a lost race — a concurrent
+    The ONE sanctioned mutation of a `leave_request` row's STATUS (there is no free-form
+    update/delete). Since Story 2.11 it is no longer the only mutation this module offers: AD-18's
+    single named exception — AD-19's recalculation of `leave_days`, for a Pending request or an
+    Approved one whose dates lie wholly in the future — is `set_leave_days` above, whose one
+    sanctioned caller is `services/recalculation.recalculate_for_holiday_change`. The two are
+    disjoint: this one moves `status` and never `leave_days`; that one moves `leave_days` and never
+    `status`. There is still no free-form update, and no delete, of a `leave_request` row.
+
+    It matches the row only while it is still in `from_status`, so a lost race — a concurrent
     transition that already moved the row — matches ZERO rows. Returns `result.rowcount`: `1` on a
     clean transition, `0` when the guard failed. The service raises `409 TRANSITION_NOT_ALLOWED` on
     a `0` and lets the whole transaction roll back (nothing else has been written — the guarded

@@ -294,8 +294,44 @@ def set_accrual(
     leaves them untouched (recalculation re-derives accrual only, never committed/spent). The
     single statement satisfies the non-deferrable `accrued = prorated_entitlement +
     carried_forward` equality CHECK and is idempotently re-derivable.
+
+    --- The `available >= 0` GATE on the DO-UPDATE branch (Story 2.10) ---
+
+    Story 2.4 deferred this guard on the premise that the DO-UPDATE branch was unreachable — every
+    caller then was a create hook inserting a FRESH row (`reserved = consumed = 0`, which cannot
+    violate the floor). Story 2.10 is the first caller to upsert onto a row that may ALREADY carry
+    `reserved`/`consumed`: an idempotent re-run of the rollover, and every DR-7a top-up. So the
+    premise is gone, and the guard is mandatory.
+
+    Lowering `accrued` below `consumed + reserved` fires the `accrued - consumed - reserved >= 0`
+    CHECK as a raw 500. `adjust_reserved`/`adjust_consumed` already pre-check exactly this and raise
+    a guarded `ValueError`; this now does the same, converting a raw CHECK violation into the
+    codebase's existing guarded failure. It hardens one of the eight — it is not a ninth method.
+
+    The row is read through `leave_balance_repo.lock_balance` DIRECTLY, and NOT through this
+    module's `_lock` helper: `_lock` raises `LookupError` on a missing row, and this function is the
+    MATERIALIZER — its dominant path is a fresh INSERT where no row exists. Wiring `_lock` in here
+    would break every create hook (`services/employee.py`, `services/leave_types.py`, `seed`). A
+    `None` means a fresh insert, whose `reserved`/`consumed` default to 0, so the floor cannot be
+    violated and the guard is correctly skipped.
     """
     accrued = prorated_entitlement + carried_forward
+
+    # The GATE (AD-5), on the DO-UPDATE path only. `None` = a fresh insert; nothing to guard.
+    existing = leave_balance_repo.lock_balance(
+        session,
+        employee_id=employee_id,
+        leave_type_id=leave_type_id,
+        leave_year=leave_year,
+    )
+    if existing is not None and accrued - existing.consumed - existing.reserved < 0:
+        raise ValueError(
+            f"set_accrual(prorated_entitlement={prorated_entitlement}, "
+            f"carried_forward={carried_forward}) lowers accrued to {accrued}, which would make "
+            f"available negative (consumed={existing.consumed}, reserved={existing.reserved}) "
+            f"for (employee={employee_id}, leave_type={leave_type_id}, year={leave_year})"
+        )
+
     leave_balance_repo.upsert_accrual(
         session,
         employee_id=employee_id,

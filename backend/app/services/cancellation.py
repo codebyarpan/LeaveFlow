@@ -47,6 +47,7 @@ from app.repositories.models import Employee
 from app.repositories.scoping import Scope
 from app.services import authorization as authz
 from app.services import balances
+from app.services import rollover
 
 # The three Cancellation Request status values, re-exported for the `api/` status filter (AC5). The
 # route cannot import `domain/` (contract 2) or type the literal (`test_vocabulary_literals.py`), so
@@ -310,6 +311,25 @@ def approve_cancellation_request(
             leave_type_id=row.leave_type_id,
             leave_year=row.start_date.year,
             days=row.leave_days,
+        )
+
+        # DR-7a (Story 2.10, AC6): the THIRD and last site where `available(Y)` RISES —
+        # `release_consumed` has just returned the cancelled leave's days. So if the Leave Year
+        # boundary has already been rolled, `carried_forward(Y+1)` (and every materialized year
+        # above it) is re-derived and topped up, in THIS transaction: the refund and the top-up are
+        # one atomic fact. Rejecting a Cancellation Request is exempt — it refunds nothing and
+        # leaves the Leave Request untouched (AC7), so `available(Y)` does not move.
+        #
+        # `leave_year=row.start_date.year` — the same value `release_consumed` was just given. A
+        # request never spans two Leave Years (DR-6), so `start_date.year` IS its Leave Year; the
+        # current calendar year would be wrong for a request cancelled after the boundary, which is
+        # precisely the case DR-7a exists to handle. This writes NO audit row (AD-8): the two rows
+        # below are the transitions, and a balance re-derivation is not one.
+        rollover.recompute_carry_forward(
+            session,
+            employee_id=row.employee_id,
+            leave_type_id=row.leave_type_id,
+            leave_year=row.start_date.year,
         )
 
         # Two audit rows, both in THIS transaction, discriminated by subject_type (AC9).

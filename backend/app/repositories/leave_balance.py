@@ -26,7 +26,7 @@ materialization by the Admin role gate, not the scope contract.
 import datetime
 import uuid
 
-from sqlalchemy import Row, select
+from sqlalchemy import Row, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -156,6 +156,56 @@ def upsert_accrual(
         },
     )
     session.execute(statement)
+
+
+def list_pairs_for_leave_type(
+    session: Session, *, leave_type_id: uuid.UUID
+) -> list[Row[tuple[uuid.UUID, int]]]:
+    """Every Employee holding a balance in this Leave Type, and their FIRST materialized year (2.12).
+
+    WHY THIS GETTER IS EXEMPT FROM THE SCOPED-GETTER CONTRACT (`tests/test_scoped_getters.py`):
+    it is not an actor-facing read at all. It is the SET OF PAIRS a policy change must recalculate,
+    swept inside the Admin's own `PATCH /leave-types/{id}` command — the same ground on which Story
+    2.11's `list_requests_covering` was exempted, and for the same reason: there is NO actor whose
+    scope could narrow it, and narrowing it would silently SKIP the very Employees whose balances
+    the new policy must be applied to. That is the bug AD-19 exists to prevent, not a scoping this
+    getter is missing. The gate is the ADMIN ROLE on the endpoint, applied before the sweep ever
+    runs (G3). Registered in that test's EXEMPT frozenset with this rationale, rather than dodged by
+    renaming it to a non-`list_` verb — Story 2.9's review settled that a surface claim gets revised
+    with a rationale, never routed around.
+
+    --- Why the FIRST materialized year, and not `date.today().year` (Landmine 4) ---
+
+    `MIN(leave_year)` per Employee. The walk that follows MUST start at the LOWEST materialized year,
+    because that year's `carried_forward` is provably `0` — there is no year below it to carry from —
+    and that zero is what ANCHORS the whole forward chain. Start anywhere else (and
+    `_current_leave_year()`, which sits in `services/balance_reads.py` and
+    `services/leave_requests.py`, is exactly the wrong function here) and `carried_forward(start)` is
+    a figure derived from the OLD policy in the year below, which the recalculation did not re-derive:
+    every year above it would then be built on a stale number. Stories 2.10 and 2.11 each recorded
+    this trap for their own ACs; this is the third time it bites.
+
+    `_materialized_years(from_year=...)` walks UPWARD from a year it is given and stops at the first
+    gap — it cannot find the bottom. This is what finds it.
+
+    `ORDER BY employee_id` ASCENDING is not cosmetic: it IS the balance-row lock order (AD-3). The
+    caller locks each pair's rows `FOR UPDATE` as it processes them, and a nondeterministic pair
+    order is how two concurrent policy edits deadlock.
+
+    A plain discovery read — no `FOR UPDATE` here. The rows are locked by `_materialized_years`,
+    ascending, once the caller reaches each pair. Returns `(employee_id, first_leave_year)` `Row`s.
+    """
+    return list(
+        session.execute(
+            select(
+                LeaveBalance.employee_id,
+                func.min(LeaveBalance.leave_year),
+            )
+            .where(LeaveBalance.leave_type_id == leave_type_id)
+            .group_by(LeaveBalance.employee_id)
+            .order_by(LeaveBalance.employee_id)
+        ).all()
+    )
 
 
 def list_balances(
