@@ -11,10 +11,10 @@
  * it: `apiFetch` clears the token and dispatches `SESSION_EXPIRED_EVENT`, and the effect
  * below turns that into the state flip that returns them to the login screen.
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { queryClient, useHealth, useMe, useUnreadCount } from './api'
-import { getToken, SESSION_EXPIRED_EVENT, setToken } from './api/session'
+import { clearToken, getToken, SESSION_EXPIRED_EVENT, setToken } from './api/session'
 import { LoginPage } from './features/auth/LoginPage'
 import { AdminDashboardPanel } from './features/dashboard/AdminDashboardPanel'
 import { DashboardPage } from './features/dashboard/DashboardPage'
@@ -67,7 +67,7 @@ function UnreadBadge() {
   return <span className="badge badge--waiting">{data.unread} unread</span>
 }
 
-function AppShell() {
+function AppShell({ onLogout }: { onLogout: () => void }) {
   // A `/me`-backed request: it proves the Bearer header is carried (AC6). If the token is
   // rejected, `apiFetch` has already cleared it and dispatched the sign-out event, so this
   // query erroring is the visible edge of the same flow — not something to handle here.
@@ -89,6 +89,12 @@ function AppShell() {
         <h1 className="shell__title">LeaveFlow</h1>
         <UnreadBadge />
         <HealthIndicator />
+        {/* Sign out (spec-logout): clears the token and the query cache, then App's token
+            gate flips back to the login screen. A deliberate teardown — the counterpart to
+            the server-driven SESSION_EXPIRED sign-out. */}
+        <button type="button" className="shell__logout" onClick={onLogout}>
+          Log out
+        </button>
       </header>
 
       <main className="shell__main">
@@ -224,28 +230,41 @@ export function App() {
   // is what makes the switch reactive: storing the token alone would not re-render.
   const [token, setSessionToken] = useState<string | null>(() => getToken())
 
-  // Drive the sign-out (Trap 6). `apiFetch` clears the stored token on a 401 TOKEN_INVALID
-  // and dispatches this event; clearing storage alone does not re-render, because `token`
-  // above still holds the value. Flipping it to `null` here is what returns the visitor to
-  // the login screen. The listener is decoupled by design — `client.ts` never imports
-  // `App`, so there is no cycle. Cleaned up on unmount.
-  useEffect(() => {
-    const onSessionExpired = () => {
-      setSessionToken(null)
-      // Drop the ENTIRE query cache with the session (code review 2026-07-15). NO cache key in
-      // this app carries a per-user identity — every scoped read (`['me']`, `['notifications']`,
-      // `['dashboard']`, `['leaveRequests']`, `['team']`, `['calendar']`, `['balances']`, …) would
-      // be served to the NEXT user who signs in on this same browser (within `staleTime`) before
-      // any refetch: a genuine cross-user disclosure, not cosmetic staleness. This was a per-key
-      // `removeQueries` list, and the list went stale TWICE — 3.4 added notifications, 3.5 added
-      // dashboards, and the team/calendar/history keys landed with no entry at all. `clear()`
-      // closes the CLASS: a future story's key is purged on day one, and the only cost is
-      // refetching public config (leave types, holidays) the next user needed fresh anyway.
-      queryClient.clear()
-    }
-    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
-    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
+  // The one teardown both sign-out paths converge on: flip the token gate to `null` and
+  // drop the whole query cache. Shared by the server-driven SESSION_EXPIRED listener and
+  // the deliberate logout below, so the two can never drift into different end states.
+  //
+  // Drop the ENTIRE query cache with the session (code review 2026-07-15). NO cache key in
+  // this app carries a per-user identity — every scoped read (`['me']`, `['notifications']`,
+  // `['dashboard']`, `['leaveRequests']`, `['team']`, `['calendar']`, `['balances']`, …) would
+  // be served to the NEXT user who signs in on this same browser (within `staleTime`) before
+  // any refetch: a genuine cross-user disclosure, not cosmetic staleness. `clear()` closes the
+  // CLASS: a future story's key is purged on day one, and the only cost is refetching public
+  // config (leave types, holidays) the next user needed fresh anyway.
+  const signOut = useCallback(() => {
+    setSessionToken(null)
+    queryClient.clear()
   }, [])
+
+  // Drive the server-side sign-out (Trap 6). `apiFetch` clears the stored token on a 401
+  // TOKEN_INVALID and dispatches this event; clearing storage alone does not re-render,
+  // because `token` above still holds the value. `signOut` flips it to `null`, returning
+  // the visitor to the login screen. The listener is decoupled by design — `client.ts`
+  // never imports `App`, so there is no cycle. Cleaned up on unmount. Note the token was
+  // ALREADY cleared by `client.ts` here, which is why `signOut` does not clear it itself —
+  // the deliberate logout path (`handleLogout`) adds that missing `clearToken` call.
+  useEffect(() => {
+    window.addEventListener(SESSION_EXPIRED_EVENT, signOut)
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, signOut)
+  }, [signOut])
+
+  // Deliberate logout (spec-logout): unlike the expiry path, no one has cleared the stored
+  // token yet, so this clears it (memory + localStorage, defensively) BEFORE the shared
+  // teardown — otherwise a reload would rehydrate `memoryToken` and revive the session.
+  const handleLogout = useCallback(() => {
+    clearToken()
+    signOut()
+  }, [signOut])
 
   if (token === null) {
     return (
@@ -266,5 +285,5 @@ export function App() {
     )
   }
 
-  return <AppShell />
+  return <AppShell onLogout={handleLogout} />
 }

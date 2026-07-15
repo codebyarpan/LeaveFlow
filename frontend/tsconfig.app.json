@@ -22,5 +22,8 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Tests are owned by tsconfig.test.json, so the production typecheck (`tsc -b`) neither
+  // depends on the test toolchain's types nor inherits its globals into app source.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test"]
 }

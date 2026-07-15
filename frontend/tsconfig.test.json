@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "esnext",
+    // Test globals live HERE, not in the production `tsconfig.app.json`: `vitest/globals`
+    // types `describe`/`it`/`expect`/`vi`, and the jest-dom matchers are augmented onto
+    // `expect` by the `@testing-library/jest-dom/vitest` import in `src/test/setup.ts`.
+    // Keeping them out of the app project means a stray `it(...)`/`expect(...)` in a
+    // component still fails the production typecheck.
+    "types": ["vite/client", "vitest/globals"],
+    "allowArbitraryExtensions": true,
+    "skipLibCheck": true,
+
+    /* Bundler mode — mirrors tsconfig.app.json */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Linting */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test"]
+}
