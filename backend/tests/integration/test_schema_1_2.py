@@ -57,6 +57,19 @@ def test_exactly_the_expected_tables_exist(db_connection: Connection) -> None:
         # the record of WHY a balance is the number it is — what changed, from what, to what, under
         # which disposition, and when. No actor column, by decision (AD-20).
         "policy_change",
+        # Story 3.4 — the in-app notification (FR-14, AD-16). The FIRST table here that is NOT
+        # append-only: `read_at` is mutable (mark-read), so `0012` grants `SELECT, INSERT, UPDATE`
+        # rather than the `INSERT, SELECT` the four log tables above share. `DELETE` is still
+        # withheld. It is NOT `audit_entry` — a notification is a CONSEQUENCE of a transition, not a
+        # transition — so SM-4's exact audit count is undisturbed (AD-8's "and nothing else").
+        "notification",
+        # Story 4.1 — the supporting document (FR-13, NFR-05, AD-15). UNIQUE (leave_request_id) — a
+        # request carries at most one — and deliberately NO size_bytes column (size is validated
+        # before the bytes are written; AC1 pins the absence in test_supporting_document.py).
+        # Mutable like `notification` (`0013` grants `SELECT, INSERT, UPDATE` for the
+        # attach-or-replace path, OD#2); `DELETE` withheld. An upload is not a state transition,
+        # so it writes no audit row and SM-4's exact count is undisturbed.
+        "supporting_document",
     }
 
 

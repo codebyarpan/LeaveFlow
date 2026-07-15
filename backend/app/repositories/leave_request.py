@@ -168,41 +168,75 @@ def list_leave_requests(
     *,
     scope: Scope,
     status: str | None,
-    limit: int,
-    offset: int,
+    statuses: tuple[str, ...] | None = None,
+    leave_type_id: uuid.UUID | None = None,
+    date_from: datetime.date | None = None,
+    date_to: datetime.date | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> tuple[list[Row], int]:  # type: ignore[type-arg]
     """Return one page of Leave Requests AND the full count, SCOPED to `actor` (AC4).
 
     Joins `leave_request → employee` and applies `employee_scope_predicate(scope, actor)` in the
     `WHERE`, so an out-of-scope request is never retrieved — the scope is a SQL predicate, never a
     Python-side filter (AD-10, NFR-04). `scope` is resolved by the caller from the actor's role
-    (`SELF`/`REPORTS`/`ALL`). The `status` filter is applied ONLY when `status is not None` — the
-    single filter FR-03 grants here (`leave_type_id`/`date_from`/`date_to` are Story 3.1's). The
-    page and total travel together (the `list_employees` shape) so the service assembles the whole
-    `Page` envelope from one repository round-trip.
+    (`SELF`/`REPORTS`/`ALL`). Each optional filter is applied ONLY when not `None` and is ANDed
+    BESIDE the scope predicate, never in place of it — a filter narrows, it never widens (FR-12,
+    AC4). `status` is Story 2.7's; `leave_type_id`/`date_from`/`date_to` are Story 3.1's;
+    `statuses` is Story 3.3's — the app's first status-SET predicate (`status IN (...)`, the
+    calendar's fixed `PENDING+APPROVED`). `status` and `statuses` compose by AND like every
+    other filter here (callers pass one or the other). `status`/`statuses` are LOCAL columns,
+    like every predicate below. The date range selects by OVERLAP — a request is included iff its range intersects `[date_from,
+    date_to]` (`end_date >= date_from AND start_date <= date_to`, each side optional) — because a
+    request straddling a Leave Year edge IS leave taken in that window, and containment semantics
+    would silently drop it (Story 3.1 Open Decision #1; Story 4.2's CSV export inherits this).
+    Every filter predicate is on a LOCAL `leave_request` column — never a joined column — so the
+    page query and the count query (which joins only `Employee`) stay in agreement and `total`
+    never lies. The page and total travel together (the `list_employees` shape) so the service
+    assembles the whole `Page` envelope from one repository round-trip.
 
     Ordered by `LeaveRequest.id.desc()`: the primary key is UUIDv7, which is time-ordered by
     construction, so descending id is newest-first — the order a Manager's queue and an Employee's
     history both want, with no `created_at` column to sort on (ERD §4.5). `total` recomputes the
-    same predicate + status filter (the LeaveType join is unneeded for a count, so it is omitted).
+    same conditions (the LeaveType join is unneeded for a count, so it is omitted).
     Returns `(_READ_COLUMNS` rows, total)`, a `get_`/`list_` getter taking the `actor`.
+
+    `limit`/`offset` are OPTIONAL since Story 4.2 (Open Decision #1): the CSV export reads ALL
+    matching rows — `MAX_PAGE_SIZE` is an API-layer clamp on list endpoints, and routing the
+    export through it would silently truncate at 100 rows (Landmine 1). Passing `None` applies no
+    `LIMIT`/`OFFSET`; the list endpoints keep passing both from the clamped `PageParams`. One
+    function, one WHERE clause — filter/scope parity between screen and export by construction.
     """
+    if status is not None and statuses is not None:
+        # Loud, not silent (code review 2026-07-15): ANDing the two filters together yields a
+        # contradiction-by-AND — an empty result that looks like "no matching requests" instead of
+        # the programming error it is. Callers pass one or the other; this enforces it.
+        raise ValueError("pass `status` or `statuses`, not both")
     predicate = employee_scope_predicate(scope, actor)
     conditions = [predicate]
     if status is not None:
         conditions.append(LeaveRequest.status == status)
+    if statuses is not None:
+        conditions.append(LeaveRequest.status.in_(statuses))
+    if leave_type_id is not None:
+        conditions.append(LeaveRequest.leave_type_id == leave_type_id)
+    if date_from is not None:
+        conditions.append(LeaveRequest.end_date >= date_from)
+    if date_to is not None:
+        conditions.append(LeaveRequest.start_date <= date_to)
 
-    rows = list(
-        session.execute(
-            select(*_READ_COLUMNS)
-            .join(Employee, LeaveRequest.employee_id == Employee.id)
-            .join(LeaveType, LeaveRequest.leave_type_id == LeaveType.id)
-            .where(*conditions)
-            .order_by(LeaveRequest.id.desc())
-            .limit(limit)
-            .offset(offset)
-        ).all()
+    query = (
+        select(*_READ_COLUMNS)
+        .join(Employee, LeaveRequest.employee_id == Employee.id)
+        .join(LeaveType, LeaveRequest.leave_type_id == LeaveType.id)
+        .where(*conditions)
+        .order_by(LeaveRequest.id.desc())
     )
+    if limit is not None:
+        query = query.limit(limit)
+    if offset is not None:
+        query = query.offset(offset)
+    rows = list(session.execute(query).all())
     total = (
         session.scalar(
             select(func.count())

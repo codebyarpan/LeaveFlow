@@ -55,6 +55,7 @@ from app.repositories.models import (
     LeaveBalance,
     LeaveRequest,
     LeaveType,
+    Notification,
 )
 from app.services import balances
 from app.services import leave_types as leave_types_service
@@ -231,6 +232,21 @@ def world(db_connection: Connection, owner_engine: Engine) -> Iterator[_World]:
             session.execute(
                 delete(AdminReviewFlag).where(
                     AdminReviewFlag.leave_type_id.in_(leave_type_ids)
+                )
+            )
+            # Story 3.4 (Landmine 16): notification rows FIRST. Every submission/decision through
+            # the API now writes one, and it FK-references BOTH `leave_request` and `employee` with
+            # NO `ON DELETE` clause (by decision — an Employee is deactivated, never deleted; a
+            # Leave Request has no DELETE endpoint). So deleting either parent first raises
+            # `ForeignKeyViolation` and errors this whole module. Deleting them explicitly, ahead of
+            # their parents, is the sanctioned fix — NOT granting the app role `DELETE` (this block
+            # already runs as the owner) and NOT `ON DELETE CASCADE` (it would signal a deletion
+            # path the product forbids). Every recipient is one of this fixture's own Employees.
+            session.execute(
+                delete(Notification).where(
+                    Notification.recipient_employee_id.in_(
+                        select(Employee.id).where(Employee.email.like(f"%{suffix}%"))
+                    )
                 )
             )
             session.execute(
@@ -670,6 +686,7 @@ def test_the_forward_check_is_what_refuses_not_the_constraint(
     """
     from app.domain.recalculation import ForwardProjection
     from app.services import recalculation as recalculation_service
+    from app.services import rollover as rollover_service
 
     tuesday, _alpha_request, _beta_request, holiday_id = _arrange_delete_refusal(world)
 
@@ -679,9 +696,20 @@ def test_the_forward_check_is_what_refuses_not_the_constraint(
             refused=False, refused_year=None, carried_forward_by_year={}
         )
 
+    # 🚨 BOTH checks must be blinded, and the second one is the point of this comment. Story 3.4's
+    # Task 11 gave `rollover.recompute_carry_forward` its OWN forward check — it is the WRITER, and
+    # leaving it guarded here would mean the recalculation never reaches `set_accrual` at all: it
+    # would refuse, flag, and return 200, and this test would fail with DID NOT RAISE while proving
+    # nothing. Blinding both restores the original claim exactly: with NO forward check anywhere, the
+    # write path walks into `set_accrual`'s `available >= 0` backstop and a bare `ValueError` escapes.
+    #
+    # That two independent checks now have to be removed to reach the backstop is not a weakening of
+    # this test — it is defence in depth, and it is why an unguarded recompute can no longer be
+    # reached from ANY of the four call sites.
     monkeypatch.setattr(
         recalculation_service, "project_forward", _blind_projection
     )
+    monkeypatch.setattr(rollover_service, "project_forward", _blind_projection)
 
     try:
         with pytest.raises(ValueError, match="available negative"):
@@ -771,10 +799,25 @@ def test_an_ADD_refuses_when_carried_forward_is_STALE_HIGH(world: _World) -> Non
     _materialize_next_year(world, world.alpha_id, carried_forward=_ENTITLEMENT)
     _spend_next_year(world, world.alpha_id, days=40)
 
-    # ...and only THEN is the year-`Y` request submitted. Nothing recomputes carry-forward.
+    # ...and only THEN is the year-`Y` request submitted.
+    #
+    # 🆕 STORY 3.4, TASK 11 CHANGED WHAT HAPPENS HERE, and the docstring above is now history rather
+    # than current behaviour. The submission DOES recompute carry-forward now (that is the AD-6 hole,
+    # closed) — but on THIS deliberately pathological pair it cannot: `available(Y)` falls to 17, so
+    # `carried_forward(Y+1)` would fall 20 → 17 and `accrued(Y+1)` 40 → 37, against 40 already spent.
+    # The forward check therefore REFUSES, writes NO balance, and raises an `admin_review_flag`.
+    #
+    # So `carried_forward` is STILL 20 and still stale-high — the arithmetic genuinely cannot be
+    # reconciled here, and Task 11 never pretended it could. What changed is that the condition is no
+    # longer SILENT: an Admin is told at submit time, by the flag asserted below, instead of the
+    # overstatement sitting in the balance unnoticed until a holiday edit tripped over it.
     request_id = _submit(world, world.alpha_id, monday, wednesday)
     assert _request(request_id).leave_days == 3
     assert _balance(world, world.alpha_id, _NEXT_YEAR).carried_forward == 20  # stale-high
+
+    submit_flags = _flags(world, world.alpha_id)
+    assert len(submit_flags) == 1
+    assert submit_flags[0].cause == vocabulary.CAUSE_SUBMISSION_RECALCULATION
 
     year_before = _snapshot(world, world.alpha_id, _YEAR)
     next_before = _snapshot(world, world.alpha_id, _NEXT_YEAR)
@@ -787,7 +830,17 @@ def test_an_ADD_refuses_when_carried_forward_is_STALE_HIGH(world: _World) -> Non
         assert _snapshot(world, world.alpha_id, _YEAR) == year_before
         assert _snapshot(world, world.alpha_id, _NEXT_YEAR) == next_before
 
-        assert len(_flags(world, world.alpha_id)) == 1
+        # TWO flags now, and they are different events: the submission's (above) and this holiday
+        # ADD's. Each names the trigger that discovered the pair could not be reconciled, which is
+        # what an Admin triaging the queue needs in order to know what she is looking at.
+        flags = _flags(world, world.alpha_id)
+        assert len(flags) == 2
+        assert sorted(f.cause for f in flags) == sorted(
+            [
+                vocabulary.CAUSE_SUBMISSION_RECALCULATION,
+                vocabulary.CAUSE_HOLIDAY_RECALCULATION,
+            ]
+        )
         assert len(envelope["recalculation"]["pairs_refused"]) == 1
     finally:
         _drop_holiday_row(tuesday)

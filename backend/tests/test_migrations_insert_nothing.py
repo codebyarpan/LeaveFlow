@@ -144,6 +144,20 @@ def test_the_migration_history_is_the_expected_ordered_chain() -> None:
         # `test_vocabulary_literals.py`, so the two enumerated values may appear there verbatim (the
         # `employee.role` / `leave_request.status` precedent).
         "0011_policy_change.py",
+        # Story 3.4. The FIRST NON-append-only table since 0008 — `read_at` is mutable, so its grant
+        # is `SELECT, INSERT, UPDATE` (NOT the `INSERT, SELECT` shape the four above share); `DELETE`
+        # is still withheld. Also the codebase's first PARTIAL index. Schema, an index and a grant
+        # only — no DML, so the guard below still passes over it. Its `CHECK (kind IN (...))` is DDL,
+        # and `alembic/versions/` is not scanned by `test_vocabulary_literals.py`, so the three
+        # enumerated kinds may appear there verbatim (the `leave_request.status` precedent).
+        "0012_notification.py",
+        # Story 4.1. The supporting_document table (FR-13/NFR-05/AD-15) — UNIQUE
+        # (leave_request_id), NO size_bytes (AC1 pins the absence), no content_type CHECK
+        # (ERD §4.2 names only the UNIQUE; the allowlist is service-layer policy). Its grant
+        # is `SELECT, INSERT, UPDATE` (the 0012 shape — OD#2's replace path mutates the row);
+        # `DELETE` is withheld. Schema and a grant only — no DML, so the guard below still
+        # passes over it.
+        "0013_supporting_document.py",
     ]
 
 

@@ -33,6 +33,14 @@ RUN pip install --no-cache-dir .
 
 # Run unprivileged. Nothing in the api service needs root once the image is built.
 RUN useradd --system --create-home --uid 10001 leaveflow
+
+# Story 4.1 (AD-15): the `documents` named volume mounts at /srv/documents. Pre-create it
+# OWNED BY the runtime user: a named volume initializes its ownership from the image's
+# directory on FIRST use, and without this it arrives root-owned — every upload then dies
+# as a PermissionError 500 in the deployed stack while the whole host-side test suite stays
+# green (found live through the :8443 proxy check, not guessed).
+RUN mkdir -p /srv/documents && chown leaveflow:leaveflow /srv/documents
+
 USER leaveflow
 
 EXPOSE 8000

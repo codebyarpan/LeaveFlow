@@ -14,15 +14,21 @@ from app.api.v1 import (
     audit_entries,
     auth,
     balances,
+    calendar,
     cancellation_requests,
+    dashboard,
     departments,
+    documents,
     employees,
     health,
     holidays,
     leave_requests,
     leave_types,
     me,
+    notifications,
     policy_changes,
+    reports,
+    team,
 )
 
 api_v1_router = APIRouter()
@@ -35,7 +41,13 @@ api_v1_router.include_router(leave_types.router)
 api_v1_router.include_router(holidays.router)
 api_v1_router.include_router(balances.router)
 api_v1_router.include_router(leave_requests.router)
+api_v1_router.include_router(documents.router)
 api_v1_router.include_router(cancellation_requests.router)
 api_v1_router.include_router(audit_entries.router)
 api_v1_router.include_router(admin_review_flags.router)
 api_v1_router.include_router(policy_changes.router)
+api_v1_router.include_router(team.router)
+api_v1_router.include_router(calendar.router)
+api_v1_router.include_router(notifications.router)
+api_v1_router.include_router(dashboard.router)
+api_v1_router.include_router(reports.router)

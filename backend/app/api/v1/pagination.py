@@ -35,6 +35,13 @@ from pydantic import BaseModel
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 100
 
+# The `page` ceiling (Story 3.1, adopting deferred-work.md:58 by name): an astronomically
+# large `page` would compute an `offset` beyond PostgreSQL's bigint OFFSET range and 500.
+# Clamped downward like everything else here — never a 422; the clamped page is simply an
+# empty page far past the data. 1,000,000 pages × the max size is orders of magnitude past
+# NFR-10 scale while keeping `offset` comfortably inside bigint.
+MAX_PAGE = 1_000_000
+
 T = TypeVar("T")
 
 
@@ -76,7 +83,7 @@ class PageParams:
     ) -> None:
         # `max(_, 1)` coerces a below-minimum value up to 1; `min(_, MAX)` clamps the page
         # size down to the ceiling. Order matters only in that both bounds are applied.
-        self.page = max(page, 1)
+        self.page = min(max(page, 1), MAX_PAGE)
         self.page_size = min(max(page_size, 1), MAX_PAGE_SIZE)
         self.limit = self.page_size
         self.offset = (self.page - 1) * self.page_size

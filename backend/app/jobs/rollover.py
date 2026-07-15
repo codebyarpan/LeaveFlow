@@ -110,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info(
         "Rollover complete: Leave Year %d closed, %d opened. %d balance rows written "
-        "(%d Employees × %d Leave Types); %d had no %d row and were materialized from zero.",
+        "(%d Employees × %d Leave Types); %d had no %d row and were materialized from zero; "
+        "%d pairs refused and flagged for Admin review.",
         summary.leave_year,
         summary.next_leave_year,
         summary.balances_written,
@@ -118,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         summary.leave_types,
         summary.missing_source_rows,
         summary.leave_year,
+        summary.refused_pairs,
     )
     return 0
 

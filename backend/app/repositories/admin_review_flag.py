@@ -91,6 +91,41 @@ def insert_admin_review_flag(
     session.flush()
 
 
+def flag_exists(
+    session: Session,
+    *,
+    employee_id: uuid.UUID,
+    leave_type_id: uuid.UUID,
+    leave_year: int,
+    cause: str,
+) -> bool:
+    """True if a flag with this exact (pair, year, cause) is already on the register.
+
+    The dedupe read for the refusal writers (code review 2026-07-15): the register is append-only
+    with NO resolved state (AC6 — "no endpoint clears a flag"), so every retry of the SAME refused
+    event (an Employee re-submitting against an unreconcilable pair, a rollover re-run) would
+    otherwise append another identical row and grow the Admin queue unboundedly for ONE underlying
+    defect. Callers skip the insert when an identical flag already stands — one flag per (pair,
+    year, cause) says everything N copies would. Distinct causes still get distinct rows, because a
+    submission and a reject are different events (the `insert_admin_review_flag` rationale above).
+
+    A SELECT, so it lives comfortably inside the table's INSERT+SELECT grant (migration 0010).
+    """
+    return (
+        session.scalar(
+            select(AdminReviewFlag.id)
+            .where(
+                AdminReviewFlag.employee_id == employee_id,
+                AdminReviewFlag.leave_type_id == leave_type_id,
+                AdminReviewFlag.leave_year == leave_year,
+                AdminReviewFlag.cause == cause,
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
 def list_admin_review_flags(
     session: Session, *, limit: int, offset: int
 ) -> tuple[list[Row], int]:  # type: ignore[type-arg]

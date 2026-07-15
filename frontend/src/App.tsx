@@ -13,10 +13,12 @@
  */
 import { useEffect, useState } from 'react'
 
-import { ME_QUERY_KEY, queryClient, useHealth, useMe } from './api'
+import { queryClient, useHealth, useMe, useUnreadCount } from './api'
 import { getToken, SESSION_EXPIRED_EVENT, setToken } from './api/session'
 import { LoginPage } from './features/auth/LoginPage'
+import { AdminDashboardPanel } from './features/dashboard/AdminDashboardPanel'
 import { DashboardPage } from './features/dashboard/DashboardPage'
+import { ManagerDashboardPanel } from './features/dashboard/ManagerDashboardPanel'
 import { DepartmentsPage } from './features/departments/DepartmentsPage'
 import { EmployeesPage } from './features/employees/EmployeesPage'
 import { HolidaysPage } from './features/holidays/HolidaysPage'
@@ -24,11 +26,15 @@ import { CancellationRequestsPanel } from './features/leave/CancellationRequests
 import { AuditLogPanel } from './features/audit/AuditLogPanel'
 import { ReviewFlagsPanel } from './features/reviewFlags/ReviewFlagsPanel'
 import { ManagerQueuePanel } from './features/leave/ManagerQueuePanel'
+import { MyLeaveHistoryPanel } from './features/leave/MyLeaveHistoryPanel'
+import { MyTeamPanel } from './features/team/MyTeamPanel'
 import { RequestCancellationPanel } from './features/leave/RequestCancellationPanel'
 import { RequestPreviewPanel } from './features/leave/RequestPreviewPanel'
 import { LeaveTypesPage } from './features/leaveTypes/LeaveTypesPage'
 import { PolicyChangesPanel } from './features/policyChanges/PolicyChangesPanel'
+import { NotificationsPanel } from './features/notifications/NotificationsPanel'
 import { ProfilePage } from './features/profile/ProfilePage'
+import { ReportsPanel } from './features/reports/ReportsPanel'
 
 function HealthIndicator() {
   const { data, isPending, isError, error } = useHealth()
@@ -37,6 +43,28 @@ function HealthIndicator() {
   if (isError) return <span className="badge badge--down">unreachable — {error.message}</span>
 
   return <span className="badge badge--up">api {data.status}</span>
+}
+
+/**
+ * The unread-notification badge (Story 3.4, AC7) — modelled on `HealthIndicator` above, and slotted
+ * into `.shell__header` as a third flex child. ZERO new CSS: the header is already
+ * `display:flex; justify-content:space-between; flex-wrap:wrap`, and `.badge`/`.badge--waiting` are
+ * the existing pill.
+ *
+ * 🚨 NO ROLE GATE — AC7's "an Employee is authenticated" means an authenticated PERSON, not the
+ * `EMPLOYEE` role. All three notification endpoints are role `any` (api-contracts §4.8), and a
+ * MANAGER is the primary recipient (`REQUEST_SUBMITTED` is addressed to her). Gating this on a role
+ * would hide the very notification FR-14 exists to deliver.
+ *
+ * Silent while loading or on error: an unread count is ambient information, and a broken pill in the
+ * header is worse than no pill. It renders nothing at zero, too — "0 unread" is noise.
+ */
+function UnreadBadge() {
+  const { data, isPending, isError } = useUnreadCount()
+
+  if (isPending || isError || data.unread === 0) return null
+
+  return <span className="badge badge--waiting">{data.unread} unread</span>
 }
 
 function AppShell() {
@@ -59,6 +87,7 @@ function AppShell() {
     <div className="shell">
       <header className="shell__header">
         <h1 className="shell__title">LeaveFlow</h1>
+        <UnreadBadge />
         <HealthIndicator />
       </header>
 
@@ -67,9 +96,9 @@ function AppShell() {
           <h2>Signed in</h2>
           <p className="muted">{identity}</p>
           <p>
-            You are authenticated. The per-role surfaces — a dashboard, the request
-            lifecycle, the team calendar — arrive across Epics 2 and 3; this shell is
-            what they render into.
+            The dashboards below are scoped to your role: everyone sees their own
+            balances and pending requests; a Manager additionally sees their team&apos;s,
+            and an Admin the organization&apos;s (Story 3.5).
           </p>
           <p className="muted">
             The session is a Bearer token held in the browser. It is attached to every
@@ -77,10 +106,32 @@ function AppShell() {
           </p>
         </section>
 
-        {/* The Employee dashboard (Story 2.4): the caller's own leave balances, Available
-            prominent with Reserved disclosed alongside. Renders for every authenticated user
-            (scope `self`); the client renders server figures as-is (AD-2). */}
+        {/* In-app notifications (Story 3.4, FR-14): what happened to my leave, and — if I am a
+            Manager — what is waiting for my decision. Opening one marks it read (idempotently).
+            🚨 The ONE panel in the app with NO role gate, deliberately: all three endpoints are role
+            `any` (api-contracts §4.8) and a MANAGER is the primary recipient, so gating on a role
+            would hide the notification FR-14 exists to deliver. The server's addressee scope
+            predicate is the guard; a non-addressee gets a 404, never a 403. */}
+        <NotificationsPanel />
+
+        {/* The Employee dashboard (Story 2.4, extended by 3.5): the caller's own leave
+            balances plus their pending-request count, with a date-range filter. Renders for
+            every authenticated user (role `any`, scope `self` — a Manager sees their OWN
+            balances here, AC5); the client renders server figures as-is (AD-2). */}
         <DashboardPage />
+
+        {/* The Manager dashboard (Story 3.5): the pending-decision count and the reports on
+            approved leave in the server's window (default: the next seven days, echoed back).
+            Renders null for a non-Manager (its own useMe gate); the server's 403
+            (require_role MANAGER — the Admin is refused too, §4.9) is the real guard. */}
+        <ManagerDashboardPanel />
+
+        {/* The Admin dashboard (Story 3.5): organization-wide totals — employees on approved
+            leave (default window: today) and the pending LEAVE-request count (Cancellation
+            Requests deliberately excluded; their queue is below). Renders null for a
+            non-Admin (its own useMe gate); the server's 403 (require_role ADMIN) is the real
+            guard. */}
+        <AdminDashboardPanel />
 
         {/* Request Leave (Story 2.5 preview → 2.6 submit): the caller picks a Leave Type and a
             range, sees the day count, the projected balance and the named excluded dates, then
@@ -88,12 +139,26 @@ function AppShell() {
             The server is the sole day-count authority; the client renders its figures as-is (AD-2). */}
         <RequestPreviewPanel />
 
+        {/* My leave history (Story 3.1): a plain Employee's every request, cross-year and
+            every-state, filterable by type/state/date range — and the app's first pagination UI.
+            Renders null for a non-Employee (its own useMe gate, Open Decision #4 — a Manager's
+            list is their reports', an Admin's everyone's; "my history" would be a false label).
+            The server's scope predicate is the real guard; server figures render as-is (AD-2). */}
+        <MyLeaveHistoryPanel />
+
         {/* The Manager decision queue (Story 2.7): a Manager's Direct Reports' PENDING requests,
             each approvable/rejectable. Renders null for a non-Manager (its own useMe gate); the
             server's 403 (require_role) and byte-identical 404 (reports scope) are the real guards.
             After a decision the queue and balances refresh; the server's leave_days is rendered
             as-is (AD-2). */}
         <ManagerQueuePanel />
+
+        {/* My team (Story 3.2): a Manager's Direct Reports, each named with Department and
+            active state — a deactivated report stays listed, marked "(deactivated)". Renders
+            null for a non-Manager (its own useMe gate); the server's 403 (require_role
+            MANAGER — the Admin is refused too, api-contracts §4.9) and the REPORTS scope
+            predicate are the real guards. Server values render as-is (AD-2). */}
+        <MyTeamPanel />
 
         {/* Cancel approved leave (Story 2.8): a plain Employee's own APPROVED requests, each
             offering a cancellation request an Admin then decides. Renders null for a non-Employee
@@ -123,6 +188,13 @@ function AppShell() {
             nor DELETE). Renders null for a non-Admin (its own useMe gate); the server's 403
             (require_role ADMIN) is the real guard. */}
         <PolicyChangesPanel />
+
+        {/* The leave report (Story 4.2, FR-15): a Manager exports their Direct Reports' leave,
+            an Admin the organization's — filters + a paged on-screen list + a CSV export that
+            carries EVERY row matching those same filters (never just the visible page). Renders
+            null for a plain Employee (its own useMe gate); the server's 403 (require_role
+            MANAGER/ADMIN) and scope predicate are the real guards. No charts (SM-C2). */}
+        <ReportsPanel />
 
         {/* Self-service: renders for every authenticated user (Role "any"). The Full Name
             is editable here; every other field is read-only, and the server is the guard. */}
@@ -160,11 +232,16 @@ export function App() {
   useEffect(() => {
     const onSessionExpired = () => {
       setSessionToken(null)
-      // Drop the profile cache with the session. `['me']` carries no per-user identity, so
-      // a stale entry left here would be served to the NEXT user who signs in on this same
-      // browser (within `staleTime`) before any refetch — the previous user's name, role
-      // and department. Clearing it on sign-out closes that window.
-      queryClient.removeQueries({ queryKey: ME_QUERY_KEY })
+      // Drop the ENTIRE query cache with the session (code review 2026-07-15). NO cache key in
+      // this app carries a per-user identity — every scoped read (`['me']`, `['notifications']`,
+      // `['dashboard']`, `['leaveRequests']`, `['team']`, `['calendar']`, `['balances']`, …) would
+      // be served to the NEXT user who signs in on this same browser (within `staleTime`) before
+      // any refetch: a genuine cross-user disclosure, not cosmetic staleness. This was a per-key
+      // `removeQueries` list, and the list went stale TWICE — 3.4 added notifications, 3.5 added
+      // dashboards, and the team/calendar/history keys landed with no entry at all. `clear()`
+      // closes the CLASS: a future story's key is purged on day one, and the only cost is
+      // refetching public config (leave types, holidays) the next user needed fresh anyway.
+      queryClient.clear()
     }
     window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
@@ -174,9 +251,12 @@ export function App() {
     return (
       <LoginPage
         onAuthenticated={(issued) => {
-          // Drop any prior user's profile before the shell mounts, so a fresh login on a
-          // shared browser fetches its own `/me` rather than reading a cached predecessor.
-          queryClient.removeQueries({ queryKey: ME_QUERY_KEY })
+          // Drop the ENTIRE query cache before the shell mounts (code review 2026-07-15), so a
+          // fresh login on a shared browser fetches everything as itself rather than reading a
+          // cached predecessor — the same class-closing `clear()` as the session-expiry listener
+          // above: no key in this app carries a per-user identity, and the per-key list this
+          // replaced went stale twice.
+          queryClient.clear()
           setSessionToken(issued) // flip this render to the shell FIRST — so that a
           setToken(issued) // denied/quota-exceeded persist (guarded, best-effort) can
           // never strand a successful login on the form. Reload persistence is the only

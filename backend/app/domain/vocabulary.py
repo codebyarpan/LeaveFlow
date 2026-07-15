@@ -272,6 +272,40 @@ CAUSE_HOLIDAY_RECALCULATION = "HOLIDAY_RECALCULATION"
 # `200` with a summary, and the flag is how the refused pair is reported (AC5).
 CAUSE_POLICY_RECALCULATION = "POLICY_RECALCULATION"
 
+# Refusal causes (Story 3.4, Task 11 — the AD-6 forcing point). `rollover.recompute_carry_forward` is
+# now FORWARD-CHECKED: it projects the walk with `domain.recalculation.project_forward` BEFORE its
+# first write, and when the projection refuses it writes NO balance and appends one
+# `admin_review_flag` instead of letting `set_accrual`'s bare `ValueError` escape as a raw 500. That
+# guard needs a cause, and the cause names WHAT TRIGGERED the recalculation:
+#
+#   * `CAUSE_SUBMISSION_RECALCULATION` — a SUBMISSION lowered `available(Y)`. This is the AD-6 hole
+#     five stories deferred (2.11 #8 → 2.12 #11 → 3.1 #6 → 3.2 #4 → 3.3 #7): the three pre-existing
+#     call sites are all sites where `available(Y)` RISES, so carry-forward only ever rose and the
+#     unguarded recompute was safe by accident. Submit is the one caller that LOWERS it.
+#   * `CAUSE_TRANSITION_RECALCULATION` — a reject, a self-cancel, or an approved Cancellation Request
+#     could not be reconciled. Reachable only when a PRIOR refused policy change left a stale cap
+#     behind (`deferred-work.md:74`), which is the raw 500 on an innocent third party's reject that
+#     the same guard now closes.
+#
+# ⚠️ Story 3.4's Open Decision #1 names only the SUBMISSION constant, because it reasoned solely about
+# the submit call site. Its own step 1 — "make `recompute_carry_forward` forward-checked" — necessarily
+# covers all FOUR callers, and stamping a reject-triggered refusal `SUBMISSION_RECALCULATION` would put
+# a false reason in the Admin's queue. Hence the sibling. Both are STORED REASONS, not error codes:
+# `CODE_TO_STATUS` is untouched, and neither maps to an HTTP status (the `CAUSE_*` precedent above).
+# `admin_review_flag.cause` is plain `TEXT` with NO `CHECK`, so neither value needs a migration.
+CAUSE_SUBMISSION_RECALCULATION = "SUBMISSION_RECALCULATION"
+CAUSE_TRANSITION_RECALCULATION = "TRANSITION_RECALCULATION"
+
+# Refusal cause (code review 2026-07-15). `run_rollover`'s own loop writes `Y+1` accruals through
+# `set_accrual` directly — Task 11 guarded `recompute_carry_forward` but not the batch, so a pair a
+# prior refusal left stale (a population the submit-path refusals grow) made a legal AC5 re-run
+# abort the ENTIRE org-wide rollover transaction on one guarded `ValueError`. The batch now applies
+# the same disposition per pair: write NO balance, flag, continue. The cause names the triggering
+# event, like its three siblings above — a batch re-run and a submission are different events and an
+# Admin triaging the queue needs to know which one she is looking at. A stored reason, not an error
+# code; `admin_review_flag.cause` is plain `TEXT`, so no migration.
+CAUSE_ROLLOVER_RECALCULATION = "ROLLOVER_RECALCULATION"
+
 # Policy-change code (Story 2.12, api-contracts §4.3, L85). `POLICY_DISPOSITION_REQUIRED` → 400 is
 # the refusal `PATCH /leave-types/{id}` raises when a balance-affecting attribute
 # (`annual_entitlement`, `carry_forward_cap`, `carries_forward`) changes and the Admin supplied NO
@@ -312,6 +346,71 @@ POLICY_DISPOSITION_REQUIRED = "POLICY_DISPOSITION_REQUIRED"
 # and defended.
 DISPOSITION_RECALCULATE = "RECALCULATE"
 DISPOSITION_PRESERVE = "PRESERVE"
+
+# Notification kinds (Story 3.4, FR-14, AD-16, ERD §NOTIFICATION). The `kind` discriminator on a
+# `notification` row — an enumerated string that leaves the process (on `GET /notifications`) and is
+# persisted under a three-value CHECK, so AD-21 requires it declared HERE, once, and typed as a
+# literal nowhere else.
+#
+# EXACTLY THREE, and the set is EXHAUSTIVE — this is settled, twice over, and a review proposal to
+# the contrary was REJECTED. `services/cancellation.py` writes ZERO Notifications: readiness F-4
+# (`:955`) and epics.md:473 both state that an Admin discovers a Cancellation Request through
+# `GET /cancellation-requests` (Story 2.8), NOT through a notification — and notifying "the Admin"
+# would need a fan-out semantics no source fixes, while FR-14 demands EXACTLY ONE Notification per
+# event. No notification is ever addressed to an Admin. ⚠️ `reviews/review-adversarial.md:166`
+# proposes a fourth and fifth kind (`CANCELLATION_APPROVED`/`CANCELLATION_REJECTED`) with a
+# polymorphic subject; that proposal was NOT adopted and must not be built from — `reviews/` are
+# companions, not the spine.
+#
+#   `REQUEST_SUBMITTED` — to the applicant's MANAGER, when a managed applicant submits (AC2).
+#   `REQUEST_APPROVED`  — to the APPLICANT, on approval — and ALSO to a MANAGERLESS applicant on
+#                         their own auto-approved submission, who is their own addressee (AC3, AC4).
+#   `REQUEST_REJECTED`  — to the APPLICANT, on rejection (AC3).
+#
+# They are STORED VALUES, not error codes — the `EXCLUSION_*`/`CAUSE_*` precedent, not the
+# `INSUFFICIENT_BALANCE` one. They map to no HTTP status, so `main.py`'s `CODE_TO_STATUS` is
+# UNTOUCHED by this story: every refusal these endpoints can produce (`404 RESOURCE_NOT_FOUND`,
+# `401 TOKEN_INVALID`) is already mapped. And there is deliberately NO `SUBJECT_NOTIFICATION`: a
+# Notification is a CONSEQUENCE of a state transition, never a transition itself, so it writes no
+# audit row and SM-4's exact count (14) is undisturbed (AD-8's "and nothing else").
+#
+# The only exempt copy of these three literals is the `notification.kind` CHECK — in `0012` and
+# mirrored in the model's `__table_args__` — exactly as `employee.role` and `leave_request.status`
+# take. The moment they land in `__all__` below, `test_vocabulary_literals.py` makes
+# `Literal["REQUEST_SUBMITTED", ...]` UNWRITABLE anywhere under `app/` or `seed/`; a route needing
+# these values at runtime builds them from a service re-export (the `LeaveStatusFilter` pattern).
+NOTIFICATION_REQUEST_SUBMITTED = "REQUEST_SUBMITTED"
+NOTIFICATION_REQUEST_APPROVED = "REQUEST_APPROVED"
+NOTIFICATION_REQUEST_REJECTED = "REQUEST_REJECTED"
+
+# Supporting-document codes (Story 4.1, api-contracts §2, FR-13/AD-15). All three are SERVICE gates
+# raised BEFORE any byte reaches the volume, wired to 400 in `main.py`:
+#
+#   `SUPPORTING_DOCUMENT_REQUIRED` — a submission for a Leave Type whose
+#       `requires_supporting_document` is true arrived without a document part. Raised by
+#       `services/leave_requests.submit_leave_request` — the ONE place the gate lives (FR-13);
+#       `details` names the Leave Type code that forced it (NFR-17).
+#   `UNSUPPORTED_FILE_TYPE` — the upload's declared content type is not PDF, JPG/JPEG or PNG.
+#       `details` names the offending type and the accepted list (NFR-17).
+#   `FILE_TOO_LARGE` — the upload exceeds 5 MB, decided by reading the stream against a hard cap
+#       (`Content-Length` is client-supplied and never trusted). `details` names the limit.
+#
+# Both validation refusals run — and refuse — BEFORE any write to the volume (AC2): a refused
+# upload leaves no file and, on the submission path, no `leave_request` row either.
+SUPPORTING_DOCUMENT_REQUIRED = "SUPPORTING_DOCUMENT_REQUIRED"
+UNSUPPORTED_FILE_TYPE = "UNSUPPORTED_FILE_TYPE"
+FILE_TOO_LARGE = "FILE_TOO_LARGE"
+
+# The document policy the service enforces (Story 4.1, Open Decision #3). POLICY, not HTTP — which
+# is why the pair lives here beside the codes that fire when it is violated (AD-21: enumerated
+# strings that leave the process — `UNSUPPORTED_FILE_TYPE.details` names this list — are declared
+# once, in `domain/`). Exactly PDF, JPG/JPEG and PNG (FR-13): browsers send `image/jpeg` for both
+# .jpg and .jpeg — there is no `image/jpg` — and no magic-byte sniffing is performed (no requirement
+# asks for it). The 5 MB limit is `5 * 1024 * 1024` bytes; the validator reads the stream with a
+# `DOCUMENT_MAX_BYTES + 1` cap and refuses on overflow. There is deliberately NO `content_type`
+# CHECK on the table (OD#7): this tuple is the one copy of the allowlist.
+DOCUMENT_CONTENT_TYPES = ("application/pdf", "image/jpeg", "image/png")
+DOCUMENT_MAX_BYTES = 5_242_880
 
 __all__ = [
     "ROLE_EMPLOYEE",
@@ -355,7 +454,18 @@ __all__ = [
     "REASON_CANCELLATION_REQUESTED",
     "CAUSE_HOLIDAY_RECALCULATION",
     "CAUSE_POLICY_RECALCULATION",
+    "CAUSE_SUBMISSION_RECALCULATION",
+    "CAUSE_TRANSITION_RECALCULATION",
+    "CAUSE_ROLLOVER_RECALCULATION",
     "POLICY_DISPOSITION_REQUIRED",
     "DISPOSITION_RECALCULATE",
     "DISPOSITION_PRESERVE",
+    "NOTIFICATION_REQUEST_SUBMITTED",
+    "NOTIFICATION_REQUEST_APPROVED",
+    "NOTIFICATION_REQUEST_REJECTED",
+    "SUPPORTING_DOCUMENT_REQUIRED",
+    "UNSUPPORTED_FILE_TYPE",
+    "FILE_TOO_LARGE",
+    "DOCUMENT_CONTENT_TYPES",
+    "DOCUMENT_MAX_BYTES",
 ]

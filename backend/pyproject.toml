@@ -31,6 +31,10 @@ dependencies = [
     # pwdlib, not passlib (last released 2020, broken against bcrypt 5).
     "pwdlib[bcrypt]==0.3.0",
     "bcrypt==5.0.0",
+    # Story 4.1 — multipart parsing for the document upload (FR-13). FastAPI's
+    # File/UploadFile/form params raise at route-definition time without it: the app
+    # fails to import, so it must land BEFORE any such parameter exists.
+    "python-multipart==0.0.32",
 ]
 
 [project.optional-dependencies]

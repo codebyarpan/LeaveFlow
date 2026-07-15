@@ -56,11 +56,16 @@ export interface CreateLeaveTypeInput {
  */
 export const LEAVE_TYPES_QUERY_KEY = ['leaveTypes'] as const
 
-/** The leave-type list, for any authenticated role (AC4). */
-export function useLeaveTypes() {
+/**
+ * The leave-type list, for any authenticated role (AC4). `options.enabled` (code review
+ * 2026-07-15) lets a role-gated panel that renders nothing skip the fetch entirely (the
+ * `useLeaveRequests` idiom); callers passing nothing get the original always-on behavior.
+ */
+export function useLeaveTypes(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: LEAVE_TYPES_QUERY_KEY,
     queryFn: () => apiFetch<Page<LeaveType>>('/leave-types'),
+    enabled: options?.enabled,
   })
 }
 

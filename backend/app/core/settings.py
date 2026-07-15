@@ -111,6 +111,15 @@ class Settings(BaseSettings):
     seed_admin_full_name: str
     seed_department_name: str
 
+    # AD-15 / NFR-05 (Story 4.1) — where supporting documents are written. OUTSIDE the web
+    # root: no static route, no `StaticFiles` mount, maps to this directory; files are
+    # reached only through the authorized GET, opened by their server-generated
+    # `storage_name`. The compose file mounts the `documents` named volume here
+    # (DOCUMENTS_DIR=/srv/documents); host-side runs (pytest, the dev server) default to a
+    # gitignored directory under `backend/`. The directory is ensure-created on first
+    # write by `services/documents.py`, never at import.
+    documents_dir: Path = _REPOSITORY_ROOT / "backend" / "var" / "documents"
+
     @field_validator(
         "postgres_password",
         "app_db_password",

@@ -35,11 +35,14 @@ React `usePreviewLeaveRequest` hook.
 from __future__ import annotations
 
 import datetime
+import email.message
 import enum
+import json
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
-from pydantic import BaseModel, model_validator
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, ValidationError, model_validator
 
 from app.api.v1.cancellation_requests import (
     CancellationRequestResponse,
@@ -49,6 +52,7 @@ from app.api.v1.dependencies import Actor, get_current_employee, require_role
 from app.api.v1.pagination import Page, PageParams
 from app.services import authorization as authz
 from app.services import cancellation as cancellation_service
+from app.services import documents as documents_service
 from app.services import leave_requests as leave_requests_service
 
 router = APIRouter()
@@ -244,13 +248,123 @@ def _to_submit_response(view: object) -> SubmitResponse:
     )
 
 
+# --- OD#1 (Story 4.1): the dual-content-type submission ---------------------------------------
+#
+# `POST /leave-requests` accepts BOTH `application/json` (the pinned, pre-4.1 path — every byte of
+# its behavior below replicates what FastAPI's own body handling produced when `body:
+# SubmitRequest` was a parameter) AND `multipart/form-data` (the ADDITIVE branch: the same three
+# fields as form parts, plus an optional `document` file part — how a document-requiring Leave
+# Type is submittable at all, Landmine 1). The §4 grant table fixes method/path/role/scope only;
+# request schemas are code-owned (§5), so the multipart variant of the SAME path is
+# contract-legal. The helpers below exist to keep the JSON branch byte-identical (Landmine 4):
+# same 422 `{"detail": [...]}` shape, same error dicts, same `("body", ...)` locs, same
+# strict-content-type semantics (a non-JSON content type is NOT parsed as JSON — the raw bytes
+# reach the model and fail as `model_attributes_type`, exactly as before).
+
+# FastAPI's own missing-body error dict (`get_missing_field_error(("body",))` in
+# `fastapi/_compat/v2.py`), reproduced literally for the empty-body case.
+_MISSING_BODY_ERROR = {
+    "type": "missing",
+    "loc": ("body",),
+    "msg": "Field required",
+    "input": None,
+}
+
+
+def _is_json_media_type(content_type_value: str) -> bool:
+    """Is this content type JSON — `application/json` or `application/*+json`?
+
+    The exact parse FastAPI 0.139's body handling performs (`email.message.Message`, maintype
+    `application`, subtype `json` or `*+json`), reproduced so the branch decision — parse as
+    JSON vs hand the raw bytes to the model — cannot drift from what the framework did when it
+    owned this body (Landmine 4). `strict_content_type` defaults to True on the pinned FastAPI,
+    so an ABSENT content type is deliberately NOT treated as JSON.
+    """
+    message = email.message.Message()
+    message["content-type"] = content_type_value
+    if message.get_content_maintype() != "application":
+        return False
+    subtype = message.get_content_subtype()
+    return subtype == "json" or subtype.endswith("+json")
+
+
+def _json_decode_error(exc: json.JSONDecodeError) -> RequestValidationError:
+    """Wrap a JSON decode failure exactly as FastAPI's body reader does (`routing.py:443-455`).
+
+    Same error dict — `json_invalid`, `loc ("body", <pos>)`, `input {}`, the decoder's message
+    in `ctx` — and the partial document as `body`, so the 422 a malformed JSON body produces is
+    byte-identical to the pre-4.1 framework one.
+    """
+    return RequestValidationError(
+        [
+            {
+                "type": "json_invalid",
+                "loc": ("body", exc.pos),
+                "msg": "JSON decode error",
+                "input": {},
+                "ctx": {"error": exc.msg},
+            }
+        ],
+        body=exc.doc,
+    )
+
+
+def _validate_submit(value: object) -> SubmitRequest:
+    """Validate a parsed body against `SubmitRequest`, re-raising the framework 422 (OD#1).
+
+    `model_validate(..., from_attributes=True)` is the same validation FastAPI's ModelField
+    ran; a failure re-raises as `RequestValidationError` with every error's `loc` prefixed
+    `("body", ...)` and `include_url=False` — the `_regenerate_error_with_loc` shape — so the
+    422 body is byte-identical to the pre-4.1 one (Landmine 4). Serves both branches: the JSON
+    path hands in the parsed object (or the raw bytes, when the content type was not JSON —
+    they fail as `model_attributes_type`, as before), the multipart path its form fields.
+    """
+    try:
+        return SubmitRequest.model_validate(value, from_attributes=True)
+    except ValidationError as exc:
+        raise RequestValidationError(
+            [
+                {**error, "loc": ("body", *error["loc"])}
+                for error in exc.errors(include_url=False)
+            ],
+            body=value,
+        ) from exc
+
+
+async def _reject_malformed_json_early(request: Request) -> None:
+    """Replicate the framework's body-read ORDERING: malformed JSON 422s before authentication.
+
+    When FastAPI owned this body, the read-and-decode ran in `get_request_handler` BEFORE
+    dependencies were solved — so a malformed JSON body was a 422 even with no/invalid token,
+    while FIELD validation ran after (401 wins there). Moving the parse into the route body
+    would silently flip that edge to a 401. This dependency is declared BEFORE
+    `get_current_employee` in the route signature, so the decode check keeps its pre-auth slot;
+    `request.json()` caches, so the route's later read costs nothing. Multipart is exempt — that
+    branch is new, and its form parse happens post-auth by design.
+    """
+    content_type_value = request.headers.get("content-type")
+    # `.lower()`: RFC 2045 media types are case-insensitive (2026-07-15 code review). Starlette's
+    # own form parser is exact-match lowercase, so an uppercase `Multipart/Form-Data` body still
+    # parses as an EMPTY form downstream — but it must branch HERE as multipart so the client
+    # gets the truthful missing-fields 422, not a JSON-path `model_attributes_type` one.
+    if content_type_value and content_type_value.lower().startswith("multipart/form-data"):
+        return
+    body_bytes = await request.body()
+    if body_bytes and content_type_value and _is_json_media_type(content_type_value):
+        try:
+            await request.json()
+        except json.JSONDecodeError as exc:
+            raise _json_decode_error(exc) from exc
+
+
 @router.post(
     "/leave-requests",
     status_code=status.HTTP_201_CREATED,
     tags=["leave-requests"],
 )
-def submit_leave_request(
-    body: SubmitRequest,
+async def submit_leave_request(
+    request: Request,
+    _early_body_guard: None = Depends(_reject_malformed_json_early),
     caller: Actor = Depends(get_current_employee),
 ) -> SubmitResponse:
     """Submit a Leave Request for the caller (AC3, AC8, FR-08). Auth only, any role; scope `self`.
@@ -259,15 +373,65 @@ def submit_leave_request(
     Employee submits their OWN request — api-contracts §4.5, role any). No/invalid token is `401
     TOKEN_INVALID`. The service runs the whole submission as one transaction: the range-validity
     refusals (`INVALID_DATE_RANGE`/`PAST_DATE_RANGE`/`SPANS_TWO_LEAVE_YEARS`/`ZERO_LEAVE_DAYS`, all
-    400) and `INSUFFICIENT_BALANCE` (400, decided under the balance lock) surface through the one
-    domain-error handler. On success the response is `201` with the persisted row — a managerless
-    applicant's is already `APPROVED` (FR-09), everyone else's `PENDING`.
+    400), `SUPPORTING_DOCUMENT_REQUIRED` (400 — a document-requiring Leave Type with no document
+    part, Story 4.1 AC4), the document validations (`UNSUPPORTED_FILE_TYPE`/`FILE_TOO_LARGE`, 400 —
+    a refused file leaves NO request row) and `INSUFFICIENT_BALANCE` (400, decided under the
+    balance lock) surface through the one domain-error handler. On success the response is `201`
+    with the persisted row — a managerless applicant's is already `APPROVED` (FR-09), everyone
+    else's `PENDING`.
+
+    CONTENT-TYPE BRANCHING (OD#1): `multipart/form-data` carries the same three fields as form
+    parts plus an optional `document` file part, read HERE off the sync spool with a
+    `DOCUMENT_MAX_BYTES + 1` cap and handed to the service as plain bytes + metadata (`UploadFile`
+    never crosses the layer boundary — contract 1). Everything else takes the JSON path, which
+    reproduces the framework's pre-4.1 semantics byte-for-byte (Landmine 4): the async `def` and
+    the manual parse exist for the multipart branch alone. This is `async def` — the one async
+    route in the app — because `request.form()` is a coroutine; the rest of the codebase's sync
+    idiom is undisturbed.
     """
+    content_type_value = request.headers.get("content-type") or ""
+    upload: object | None = None
+    # `.lower()`: same RFC 2045 case-fold as `_reject_malformed_json_early` — the two branch
+    # decisions must agree or an uppercase multipart body would be json-checked pre-auth and
+    # form-parsed post-auth. A malformed multipart body (bad/missing boundary) is NOT a raw
+    # 500: Starlette converts `MultiPartException` to an in-app 400 (pinned by test).
+    if content_type_value.lower().startswith("multipart/form-data"):
+        form = await request.form()
+        # The scalar fields, minus the file part — pydantic coerces the form's strings into
+        # the same UUID/date types the JSON branch gets, through the same shared validator.
+        fields = {key: value for key, value in form.items() if key != "document"}
+        body = _validate_submit(fields)
+        part = form.get("document")
+        # A `FormData` value is a `str` or an upload; only a real file part becomes a document
+        # (a stray string field named `document` is not evidence, and is ignored as absent).
+        if part is not None and not isinstance(part, str):
+            payload = part.file.read(documents_service.DOCUMENT_MAX_BYTES + 1)
+            upload = documents_service.UploadDocument(
+                payload=payload,
+                declared_type=part.content_type or "",
+                original_filename=part.filename or "",
+            )
+    else:
+        body_bytes = await request.body()
+        if not body_bytes:
+            raise RequestValidationError([_MISSING_BODY_ERROR], body=None)
+        if content_type_value and _is_json_media_type(content_type_value):
+            # Decode errors were already raised pre-auth by `_reject_malformed_json_early`;
+            # `request.json()` returns its cached parse here.
+            parsed: object = await request.json()
+        else:
+            # Non-JSON (or absent) content type: the raw bytes reach the model and fail as
+            # `model_attributes_type` — exactly the pinned framework behavior
+            # (`strict_content_type=True` on the pinned FastAPI).
+            parsed = body_bytes
+        body = _validate_submit(parsed)
+
     view = leave_requests_service.submit_leave_request(
         caller,
         leave_type_id=body.leave_type_id,
         start=body.start_date,
         end=body.end_date,
+        document=upload,
     )
     return _to_submit_response(view)
 
@@ -295,12 +459,18 @@ class LeaveRequestResponse(BaseModel):
     status: str
 
 
-def _to_leave_request_response(view: object) -> LeaveRequestResponse:
+def to_leave_request_response(view: object) -> LeaveRequestResponse:
     """Project a `LeaveRequestView` into the response, BY HAND (contract 2, the `balances.py` precedent).
 
     Typed `object` because `api/` may import neither the service dataclass nor the ORM; the service
     guarantees the fields are present. `leave_days` is read from the stored value the view carries —
     never recomputed here (AD-18). No `from_attributes`.
+
+    PUBLIC (Story 3.3): `api/v1/calendar.py` reuses this projection and `LeaveRequestResponse`
+    byte-for-byte (Open Decision #1 — a Manager already reads all ten fields for these exact rows
+    via `GET /leave-requests`; a narrower calendar shape would be a second projection with zero
+    disclosure gained). The single-home precedent: `DepartmentBrief` imported from `employees.py` —
+    never redeclare a response shape.
     """
     return LeaveRequestResponse(
         id=view.id,
@@ -334,7 +504,7 @@ def approve_leave_request(
     days move `reserved → consumed` and the updated request is returned.
     """
     view = leave_requests_service.approve_leave_request(caller, request_id)
-    return _to_leave_request_response(view)
+    return to_leave_request_response(view)
 
 
 @router.post(
@@ -353,7 +523,7 @@ def reject_leave_request(
     returned.
     """
     view = leave_requests_service.reject_leave_request(caller, request_id)
-    return _to_leave_request_response(view)
+    return to_leave_request_response(view)
 
 
 @router.post(
@@ -373,32 +543,44 @@ def cancel_leave_request(
     returned.
     """
     view = leave_requests_service.cancel_leave_request(caller, request_id)
-    return _to_leave_request_response(view)
+    return to_leave_request_response(view)
 
 
 @router.get("/leave-requests", tags=["leave-requests"])
 def list_leave_requests(
     params: PageParams = Depends(),
     status_filter: LeaveStatusFilter | None = Query(default=None, alias="status"),
+    leave_type_id: uuid.UUID | None = Query(default=None),
+    date_from: datetime.date | None = Query(default=None),
+    date_to: datetime.date | None = Query(default=None),
     caller: Actor = Depends(get_current_employee),
 ) -> Page[LeaveRequestResponse]:
-    """List Leave Requests, scoped and paged, optionally filtered by status (AC4). Any role.
+    """List Leave Requests, scoped, paged and filtered (AC4 of 2.7; FR-12/FR-20, Story 3.1). Any role.
 
     `get_current_employee`: role `any`, scope resolved from the caller's role in the service — an
     Employee receives their own, a Manager their Direct Reports', an Admin all (a SQL predicate,
-    never a post-filter). The `status` query param is validated against the four allowed values by
-    `LeaveStatusFilter` (a bad value is a framework `422`); it narrows the page when present. The
-    envelope is the shared `Page` — `items`/`page`/`page_size`/`total`, `page_size` clamped to the
-    server maximum by `PageParams`.
+    never a post-filter). Filters COMPOSE as an intersection and only ever narrow that scope
+    (FR-12): `status` is validated against the four allowed values by `LeaveStatusFilter`;
+    `leave_type_id`/`date_from`/`date_to` (Story 3.1) are typed `uuid.UUID`/`datetime.date`, so a
+    malformed value is a framework `422` exactly like a bad `status` — no domain error code exists
+    for a filter, and none is wanted. The date window selects by OVERLAP (a request whose range
+    intersects it, Open Decision #1); an inverted window is a well-formed empty intersection →
+    `200` with an empty page, and a nonexistent `leave_type_id` matches nothing → `200` empty, not
+    `404` (AD-10 reserves 404 for scope misses). Absent filters mean an Employee's UNFILTERED list
+    is their whole cross-Leave-Year history (FR-20). The envelope is the shared `Page` —
+    `items`/`page`/`page_size`/`total`, `page_size` clamped to the server maximum by `PageParams`.
     """
     views, total = leave_requests_service.list_leave_requests(
         caller,
         status=status_filter.value if status_filter is not None else None,
+        leave_type_id=leave_type_id,
+        date_from=date_from,
+        date_to=date_to,
         limit=params.limit,
         offset=params.offset,
     )
     return Page[LeaveRequestResponse](
-        items=[_to_leave_request_response(view) for view in views],
+        items=[to_leave_request_response(view) for view in views],
         page=params.page,
         page_size=params.page_size,
         total=total,
@@ -417,7 +599,7 @@ def get_leave_request(
     date range, STORED `leave_days` (AD-18, never recomputed) and current state.
     """
     view = leave_requests_service.get_leave_request(caller, request_id)
-    return _to_leave_request_response(view)
+    return to_leave_request_response(view)
 
 
 @router.post(

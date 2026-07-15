@@ -92,20 +92,30 @@ def get_by_id_with_department(
 
 
 def list_employees(
-    session: Session, actor: Employee, limit: int, offset: int
+    session: Session,
+    actor: Employee,
+    limit: int,
+    offset: int,
+    scope: Scope = Scope.ALL,
 ) -> tuple[list[Employee], int]:
     """Return one page of Employees AND the full count, scoped to `actor` (AC3, AC4).
 
-    Takes the acting Employee and applies `employee_scope_predicate(Scope.ALL, actor)` in
-    the `WHERE` (Trap 1) — for an Admin the predicate is `true()`, so every row is
-    returned, but the getter is honestly scoped rather than EXEMPT. `department` is
-    eager-loaded so the route can project `{id, name}` after the session closes
-    (`expire_on_commit=False` preserves a *loaded* attribute but does not lazy-load a
-    relationship on a detached row). Ordered by `full_name, id` so pages are deterministic
-    across `LIMIT`/`OFFSET`. The page and the total travel together so the `api/` layer
-    assembles the whole `Page` envelope from one repository round-trip.
+    Takes the acting Employee and applies `employee_scope_predicate(scope, actor)` in the
+    `WHERE` (Trap 1). `scope` defaults to `Scope.ALL` — the Admin-only `GET /employees`
+    read (Story 1.6), whose predicate is `true()`, so every row is returned, but the getter
+    is honestly scoped rather than EXEMPT. Story 3.2's `GET /team` passes `Scope.REPORTS`,
+    so a Manager receives exactly their Direct Reports — the "Manager-scoped variant" this
+    module's docstring promised as a change of scope, not signature, delivered here (the
+    exact shape `get_employee` has carried since Story 2.4). Note the REPORTS predicate has
+    no `is_active` filter, deliberately: a deactivated report stays IN the list (FR-19's
+    "distinguishable" means present). `department` is eager-loaded so the route can project
+    `{id, name}` after the session closes (`expire_on_commit=False` preserves a *loaded*
+    attribute but does not lazy-load a relationship on a detached row). Ordered by
+    `full_name, id` so pages are deterministic across `LIMIT`/`OFFSET`. The page and the
+    total travel together so the `api/` layer assembles the whole `Page` envelope from one
+    repository round-trip.
     """
-    predicate = employee_scope_predicate(Scope.ALL, actor)
+    predicate = employee_scope_predicate(scope, actor)
     rows = list(
         session.scalars(
             select(Employee)

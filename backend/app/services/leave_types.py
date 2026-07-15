@@ -299,19 +299,21 @@ def _must_recalculate(changed: dict[str, object], disposition: str) -> bool:
     --- Why PRESERVE CANNOT preserve a cap (Landmine 3, Open Decision #1) ---
 
     THERE IS NO `carry_forward_cap_basis`. Nothing freezes the cap. Every downstream trigger re-reads
-    it LIVE off the `leave_type` row — `rollover.recompute_carry_forward` at :265/:295-299, and
-    `run_rollover` at :176-180 — and NEITHER HAS A FORWARD CHECK. So "PRESERVE the cap, write
-    nothing" does not preserve anything; it merely defers the re-derivation to a code path that
-    cannot refuse:
+    it LIVE off the `leave_type` row — `rollover.recompute_carry_forward` and `run_rollover` — so
+    "PRESERVE the cap, write nothing" does not preserve anything; it merely defers the re-derivation
+    to a code path that never asked for it:
 
       1. an Admin lowers EL's cap 30 → 5 under `PRESERVE`; the rows keep `carried_forward(Y+1) = 30`;
       2. weeks later an UNRELATED Manager rejects an UNRELATED year-`Y` request, which fires
-         `recompute_carry_forward` (`leave_requests.py:533`) — which re-reads the NEW cap, computes
+         `recompute_carry_forward` (`leave_requests.py`) — which re-reads the NEW cap, computes
          `min(5, available(Y)) = 5 ≠ 30`, and drops `accrued(Y+1)` by 25;
-      3. `Y+1` is already spent → `set_accrual`'s guard raises a bare `ValueError` → a RAW 500 on the
-         Manager's reject. The three Story 2.10 hooks were wired on the premise that `available(Y)`
-         only RISES; an out-of-band cap change destroys that premise, and none of them can refuse.
-      4. The same change aborts the ENTIRE `run_rollover` batch transaction the next time it runs.
+      3. if `Y+1` is already spent, the pair is REFUSED and flagged rather than reconciled — the
+         balance keeps a carry-forward the new cap cannot justify, indefinitely. (When this rationale
+         was written neither trigger had a forward check and step 3 was a RAW 500 on the Manager's
+         reject, and the same pair aborted the ENTIRE `run_rollover` batch on its next run; Story
+         3.4's Task 11 guarded `recompute_carry_forward` and the 2026-07-15 code review guarded the
+         `run_rollover` batch, so the failure is now a standing flag instead of a 500 — but a flag
+         is a symptom for an Admin, not a policy the Admin chose.)
 
     `carries_forward: true → false` is worse still: it zeroes `carried_forward` in EVERY later year,
     from a path that cannot refuse.

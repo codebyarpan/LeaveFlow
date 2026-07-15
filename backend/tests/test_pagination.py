@@ -11,7 +11,13 @@ story raised `MAX_PAGE_SIZE`, this test would move with it, and every later list
 inherits the clamp these assertions describe.
 """
 
-from app.api.v1.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page, PageParams
+from app.api.v1.pagination import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE,
+    MAX_PAGE_SIZE,
+    Page,
+    PageParams,
+)
 
 
 def test_a_page_size_above_the_maximum_is_clamped_not_rejected() -> None:
@@ -52,6 +58,25 @@ def test_a_below_minimum_page_size_coerces_to_one() -> None:
     """`page_size < 1` coerces to the minimum of 1, never a 422."""
     assert PageParams(page=1, page_size=0).page_size == 1
     assert PageParams(page=1, page_size=-10).page_size == 1
+
+
+def test_an_unbounded_page_is_clamped_never_a_bigint_offset() -> None:
+    """Story 3.1 (deferred-work.md:58): an absurd `page` clamps to `MAX_PAGE`, never a 500.
+
+    Without the clamp, `page=10**18` computes an `offset` past PostgreSQL's bigint OFFSET
+    range — a raw 500 for any authenticated caller. Clamped downward like `page_size`
+    (never a 422), the request degrades to a far-off empty page.
+    """
+    params = PageParams(page=10**18, page_size=MAX_PAGE_SIZE)
+
+    assert params.page == MAX_PAGE
+    assert params.offset == (MAX_PAGE - 1) * MAX_PAGE_SIZE
+    # The clamped offset stays far inside bigint (2**63 - 1).
+    assert params.offset < 2**63 - 1
+
+    # At or below the ceiling is preserved unchanged.
+    assert PageParams(page=MAX_PAGE, page_size=1).page == MAX_PAGE
+    assert PageParams(page=MAX_PAGE - 1, page_size=1).page == MAX_PAGE - 1
 
 
 def test_offset_is_computed_from_the_clamped_page_and_size() -> None:

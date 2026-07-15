@@ -188,37 +188,23 @@ def _materialized_years(
     4: on the holiday path it is the EDITED year `Y`; on the policy path it is the pair's LOWEST
     materialized year, whose `carried_forward` is provably `0` and is what anchors the forward chain.
     Neither is ever `date.today().year`.
-    """
-    years: list[YearBalance] = []
-    year = from_year
-    while True:
-        balance = leave_balance_repo.lock_balance(
-            session,
-            employee_id=employee_id,
-            leave_type_id=leave_type_id,
-            leave_year=year,
-        )
-        if balance is None:
-            break
-        years.append(
-            YearBalance(
-                leave_year=year,
-                prorated_entitlement=balance.prorated_entitlement,
-                carried_forward=balance.carried_forward,
-                reserved=balance.reserved,
-                consumed=balance.consumed,
-            )
-        )
-        year += 1
 
-    if not years:
-        raise LookupError(
-            "no leave_balance row for "
-            f"(employee={employee_id}, leave_type={leave_type_id}, year={from_year}); "
-            "a Leave Request cannot exist for a pair with no balance row in its own Leave Year — "
-            "reserve/consume_direct would have refused it at submission"
-        )
-    return years
+    🚨 THE BODY MOVED (Story 3.4, Task 11). `rollover.materialized_years` is now the ONE
+    implementation, because `rollover.recompute_carry_forward` became forward-checked and needs the
+    identical walk to build its projection — and `rollover` cannot import THIS module (that edge is
+    already pointed the other way, `:80`, so it would be circular). This stays as a named delegation
+    rather than a call-site rename purely to keep the two caller-specific notes above, which are about
+    what `from_year` MEANS on each path and belong with the callers that pass it.
+
+    The agreement between the projection and the write loop is load-bearing for AD-6; two copies of
+    this walk is exactly the drift that would break it silently.
+    """
+    return rollover.materialized_years(
+        session,
+        employee_id=employee_id,
+        leave_type_id=leave_type_id,
+        from_year=from_year,
+    )
 
 
 def recalculate_for_holiday_change(
@@ -415,15 +401,18 @@ def recalculate_for_holiday_change(
             )
 
         # Propagate `carried_forward` forward through every materialized later year, to the fixed
-        # point (AD-6). This is the FOURTH call site of `recompute_carry_forward` — Story 2.10 wired
-        # the other three (reject, self-cancel, approve-CR) — and the FIRST where `available(Y)` can
-        # FALL. That is exactly the case `set_accrual`'s `available >= 0` guard was hardened for, and
-        # exactly why the forward check runs first: the guard must never fire.
+        # point (AD-6). This path already ran its OWN `project_forward` above and only reaches here
+        # when the projection PASSED, so `recompute_carry_forward`'s internal forward check (Story
+        # 3.4, Task 11) is a second look at an answer already known — it cannot refuse here, and the
+        # `cause` below is therefore unreachable in practice. It is passed honestly all the same:
+        # a flag stamped with the wrong reason is worse than one that never fires.
         rollover.recompute_carry_forward(
             session,
             employee_id=employee_id,
             leave_type_id=leave_type_id,
             leave_year=leave_year,
+            cause=vocabulary.CAUSE_HOLIDAY_RECALCULATION,
+            occurred_at=occurred_at,
         )
         pairs_recalculated += 1
 
@@ -637,6 +626,8 @@ def recalculate_for_policy_change(
             employee_id=employee_id,
             leave_type_id=leave_type_id,
             leave_year=years[0].leave_year,
+            cause=vocabulary.CAUSE_POLICY_RECALCULATION,
+            occurred_at=occurred_at,
         )
         pairs_recalculated += 1
 

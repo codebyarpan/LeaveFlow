@@ -4,8 +4,10 @@
  * Implements: AC8, and the spine's source tree (`src/api/` — typed client, TanStack
  * Query hooks).
  */
-export { API_BASE_PATH, ApiError, apiFetch } from './client'
+export { API_BASE_PATH, ApiError, apiFetch, apiFetchBlob } from './client'
 export type { ErrorEnvelope } from './client'
+export { fetchDocumentBlob, uploadDocument } from './documents'
+export type { DocumentUploadResult } from './documents'
 export { login, useLogin } from './auth'
 export type { Credentials, LoginResponse } from './auth'
 export { clearToken, getToken, setToken, SESSION_EXPIRED_EVENT, TOKEN_STORAGE_KEY } from './session'
@@ -61,6 +63,19 @@ export type { RecalculationSummary, RefusedPair } from './recalculation'
 export { BALANCES_QUERY_KEY, useBalances } from './balances'
 export type { Balance } from './balances'
 export {
+  DASHBOARD_QUERY_KEY,
+  useAdminDashboard,
+  useEmployeeDashboard,
+  useManagerDashboard,
+} from './dashboard'
+export type {
+  AdminDashboard,
+  DashboardParams,
+  EmployeeDashboard,
+  ManagerDashboard,
+  ReportOnLeave,
+} from './dashboard'
+export {
   LEAVE_REQUESTS_QUERY_KEY,
   useApproveLeaveRequest,
   useCancelLeaveRequest,
@@ -72,6 +87,7 @@ export {
 export type {
   ExcludedDate,
   LeaveRequest,
+  LeaveRequestFilters,
   LeaveRequestPreview,
   LeaveRequestSubmission,
   PreviewLeaveInput,
@@ -94,4 +110,16 @@ export {
 export type { AdminReviewFlag } from './adminReviewFlags'
 export { POLICY_CHANGES_QUERY_KEY, usePolicyChanges } from './policyChanges'
 export type { PolicyChange } from './policyChanges'
+export { TEAM_QUERY_KEY, useTeam } from './team'
+export type { TeamMember } from './team'
+export { CALENDAR_QUERY_KEY, useCalendar } from './calendar'
+export type { CalendarParams } from './calendar'
+export {
+  NOTIFICATIONS_QUERY_KEY,
+  useMarkNotificationRead,
+  useNotifications,
+  useUnreadCount,
+} from './notifications'
+export type { Notification, NotificationParams, UnreadCount } from './notifications'
+export { fetchLeaveReportCsv } from './reports'
 export { queryClient } from './queryClient'

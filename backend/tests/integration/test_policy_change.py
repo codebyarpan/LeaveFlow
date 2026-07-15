@@ -69,6 +69,7 @@ from app.repositories.models import (
     LeaveBalance,
     LeaveRequest,
     LeaveType,
+    Notification,
     PolicyChange,
 )
 from app.services import balances
@@ -277,6 +278,21 @@ def world(db_connection: Connection, owner_engine: Engine) -> Iterator[_World]:
                 delete(AdminReviewFlag).where(
                     (AdminReviewFlag.leave_type_id.in_(ids))
                     | (AdminReviewFlag.employee_id.in_(employee_ids))
+                )
+            )
+            # Story 3.4 (Landmine 16): notification rows FIRST. Every submission/decision through
+            # the API now writes one, and it FK-references BOTH `leave_request` and `employee` with
+            # NO `ON DELETE` clause (by decision — an Employee is deactivated, never deleted; a
+            # Leave Request has no DELETE endpoint). So deleting either parent first raises
+            # `ForeignKeyViolation` and errors this whole module. Deleting them explicitly, ahead of
+            # their parents, is the sanctioned fix — NOT granting the app role `DELETE` (this block
+            # already runs as the owner) and NOT `ON DELETE CASCADE` (it would signal a deletion
+            # path the product forbids). Every recipient is one of this fixture's own Employees.
+            session.execute(
+                delete(Notification).where(
+                    Notification.recipient_employee_id.in_(
+                        select(Employee.id).where(Employee.email.like(f"%{suffix}%"))
+                    )
                 )
             )
             session.execute(
@@ -945,51 +961,38 @@ class TestPreserve:
             assert row.accrued - row.consumed - row.reserved >= 0
             assert row.accrued == row.prorated_entitlement + row.carried_forward
 
-    def test_a_refused_pair_still_carries_a_stale_cap_into_an_unrelated_reject(
+    def test_a_refused_pair_with_a_stale_cap_is_flagged_not_500(
         self, world: _World
     ) -> None:
-        """⚠️⚠️ THE ONE DEFECT THIS STORY SHIPS, PINNED HERE RATHER THAN LEFT TO BE DISCOVERED.
+        """✅ THE DEFECT STORY 2.12 SHIPPED, NOW FIXED — Story 3.4, Task 11.
 
-        This test asserts a RAW 500. It passes because the bug is real, and it exists so that the bug
-        is a KNOWN, OWNED, REPRODUCIBLE item and not an accident. Read it as a bug report with a
-        `pytest` harness, not as an endorsement.
+        This REPLACES `test_a_refused_pair_still_carries_a_stale_cap_into_an_unrelated_reject`, which
+        asserted a RAW 500 and passed because the bug was real. `deferred-work.md:74` said in advance:
+        *"if that test ever fails, someone fixed the bug."* Someone did, so it is replaced rather than
+        quietly deleted, and this test pins the NEW, correct behaviour on the same scenario.
 
-        --- What happens ---
+        --- The bug that was ---
 
-        AD-19 says a pair the forward check would drive negative is left ENTIRELY UNCHANGED and
-        flagged. For a HOLIDAY change (Story 2.11) that is a STABLE resting place: nothing was written,
-        no input to `carry_forward_days` moved, so the next `recompute_carry_forward` recomputes the
-        same value it already holds, hits its fixed point, and returns.
+        `carry_forward_cap` is a LIVE, GLOBAL input to `carry_forward_days`. A pair the forward check
+        REFUSES is left holding a `carried_forward` the NEW policy says is impossible, and the next
+        trigger to fire `recompute_carry_forward` on it tried to LOWER it — from a code path that had
+        no forward check and whose only backstop was `set_accrual`'s bare `ValueError`. An unrelated
+        Manager, rejecting an unrelated request, got a raw 500 (and `run_rollover` aborted its whole
+        batch on the same row).
 
-        A CAP change is different, and this story is the first thing that can make one.
-        `carry_forward_cap` is a LIVE, GLOBAL input to `carry_forward_days`, and it has now changed for
-        everybody — including the pair we just declined to touch. So the refused pair is left holding a
-        `carried_forward` that the NEW policy says is impossible, and the next trigger to fire
-        `recompute_carry_forward` on it will try to lower it — from a code path that has NO forward
-        check and whose only backstop is `set_accrual`'s bare `ValueError`:
+        --- What happens now ---
 
-          1. Alice's `Y+1` has 20 of 24 days spent. The Admin lowers the cap 30 → 5.
-          2. The forward check refuses her pair (`12 + 5 − 20 = −3`), flags it, and leaves it alone.
-             So far, exactly as AD-19 requires — and the Admin is told.
-          3. Weeks later an UNRELATED Manager rejects an UNRELATED year-`Y` request of Alice's. That
-             fires `recompute_carry_forward` (`leave_requests.py`), which re-reads the NEW cap,
-             computes `min(5, 12) = 5 ≠ 12`, and calls `set_accrual` — which finds `accrued(Y+1)`
-             falling to 17 against 20 already consumed and raises a bare `ValueError`.
-          4. The MANAGER gets a raw 500, on a transaction that has nothing to do with the policy
-             change. (And the next `run_rollover` aborts its whole batch on the same row.)
+        `rollover.recompute_carry_forward` is FORWARD-CHECKED (Story 3.4, Task 11). It projects the
+        walk with `project_forward` BEFORE its first write; when the projection refuses it writes NO
+        balance and appends ONE `admin_review_flag` instead. **The reject still COMMITS**: a Manager is
+        never refused, and never 500'd, over a carry-forward artifact in a later year that has nothing
+        to do with her decision. The unreconcilable balance goes to an Admin.
 
-        --- Why it is not fixed here ---
-
-        The fix belongs in `services/rollover.recompute_carry_forward`, which this story's Dev Notes
-        explicitly list under "No change to" — and it is a DESIGN decision, not a typo: when a balance
-        cannot absorb a new cap, should the reject refuse (which error code? api-contracts defines
-        none), clamp (inventing arithmetic no requirement grants), or skip-and-flag (a fourth flag
-        writer)? Silently widening this story's scope to answer that is exactly what Story 2.11
-        declined to do with its own Open Decision #8, and the discipline is the same.
-
-        So it is RAISED, not hidden: pinned by this test, logged in `deferred-work.md`, and put to the
-        reviewer as this story's first open item. If this test ever starts FAILING, someone has fixed
-        the bug — delete it and celebrate.
+        Both of that fix's halves are visible here — and note the FIRST one, which is the AD-6 hole
+        itself: the submission below now recomputes carry-forward, so `carried_forward(Y+1)` is
+        RE-DERIVED at submit time (12 → 10) instead of silently going stale-high. That is Task 11's
+        primary mandate; the no-500-on-reject below is the second defect it closes for free, because
+        both had one root cause — this function was unguarded.
         """
         # 20 of 24 spent in Y+1 — beyond what the new cap can support (`12 + 5 = 17`).
         _materialize(
@@ -1011,6 +1014,17 @@ class TestPreserve:
             start + datetime.timedelta(days=1),
         )
 
+        # 🆕 AD-6, CLOSED. The submission reserved 2 days, so `available(Y)` fell 12 → 10, and the
+        # submit-side recompute (Story 3.4, Task 11) RE-DERIVED `carried_forward(Y+1)` to match:
+        # `accrued(Y+1) = 12 + 10 = 22` against 20 consumed, so the projection PASSED and the write
+        # went through. Before Task 11 this stayed at a stale-high 12 and nothing ever corrected it.
+        assert (
+            _balance(world.alice_id, world.carrying_id, _NEXT_YEAR).carried_forward == 10
+        )
+        # The submission itself was never at risk — it committed, and raised NO flag, because its
+        # recompute succeeded.
+        assert len(_flags(world.carrying_id)) == 0
+
         # The cap decrease. The pair is REFUSED and FLAGGED — AD-19 working exactly as specified.
         response = _patch(
             world,
@@ -1024,17 +1038,32 @@ class TestPreserve:
         assert len(_flags(world.carrying_id)) == 1
 
         # Left entirely unchanged, as AD-19 promises — and therefore holding a carry-forward the new
-        # policy cannot justify.
-        assert _balance(
-            world.alice_id, world.carrying_id, _NEXT_YEAR
-        ).carried_forward == _ENTITLEMENT
+        # cap cannot justify (`min(5, 10) = 5`, and `12 + 5 = 17 < 20` consumed).
+        assert (
+            _balance(world.alice_id, world.carrying_id, _NEXT_YEAR).carried_forward == 10
+        )
 
-        # ⚠️ AND HERE IS THE BUG. An unrelated Manager, rejecting an unrelated request, gets a raw 500.
-        with pytest.raises(ValueError, match="would make available negative"):
-            _client.post(
-                f"/api/v1/leave-requests/{request_id}/reject",
-                headers=_auth(world.manager_token),
-            )
+        # ✅ AND HERE IS THE FIX. The unrelated Manager's reject SUCCEEDS — 200, not a raw 500.
+        reject = _client.post(
+            f"/api/v1/leave-requests/{request_id}/reject",
+            headers=_auth(world.manager_token),
+        )
+        assert reject.status_code == 200, reject.text
+        assert reject.json()["status"] == vocabulary.STATUS_REJECTED
+
+        # The reject's own recompute could not reconcile the stale cap either — so it too wrote no
+        # balance and raised a SECOND flag, this one stamped with the cause of the event that hit it.
+        flags = _flags(world.carrying_id)
+        assert len(flags) == 2
+        assert [f.cause for f in flags].count(
+            vocabulary.CAUSE_TRANSITION_RECALCULATION
+        ) == 1
+
+        # The balance is STILL untouched — the refusal writes nothing, which is exactly what makes it
+        # safe to run on a path that must not fail.
+        assert (
+            _balance(world.alice_id, world.carrying_id, _NEXT_YEAR).carried_forward == 10
+        )
 
     def test_preserve_still_records_the_disposition_it_was_given(
         self, world: _World
@@ -1360,11 +1389,16 @@ class TestTheCarryForwardRecomputation:
 
         with Session(get_engine()) as session:
             for employee_id in (world.alice_id, world.bob_id):
+                # `cause`/`occurred_at` are required since Story 3.4's Task 11 made this
+                # forward-checked. They are the flag's payload and are unreachable here: this call is
+                # asserted to be a NO-OP, so its projection cannot refuse.
                 rollover.recompute_carry_forward(
                     session,
                     employee_id=employee_id,
                     leave_type_id=world.carrying_id,
                     leave_year=_YEAR,
+                    cause=vocabulary.CAUSE_POLICY_RECALCULATION,
+                    occurred_at=datetime.datetime.now(datetime.UTC),
                 )
             session.commit()
 
@@ -1512,6 +1546,16 @@ class TestSM5:
                 session.execute(
                     delete(AdminReviewFlag).where(
                         AdminReviewFlag.leave_type_id == fourth_id
+                    )
+                )
+                # Story 3.4 (Landmine 16): notification rows FIRST. The submit and the approve
+                # above each wrote one, and a notification FK-references `leave_request` with no
+                # `ON DELETE` clause — so deleting the requests first raises `ForeignKeyViolation`.
+                # `lr_ids` is exactly the set about to be deleted, so it is the honest predicate
+                # here (this teardown is scoped by Leave Type, not by an employee suffix).
+                session.execute(
+                    delete(Notification).where(
+                        Notification.leave_request_id.in_(lr_ids)
                     )
                 )
                 session.execute(

@@ -118,5 +118,14 @@ CODE_TO_STATUS.update(
         # This is the story's ONLY change to this file. CAUSE_POLICY_RECALCULATION and the two
         # DISPOSITION_* constants are enumerated strings, not error codes — they map to no status.
         vocabulary.POLICY_DISPOSITION_REQUIRED: 400,
+        # Story 4.1 — the three supporting-document refusals, all 400 (api-contracts §2). Each is
+        # a service gate raised BEFORE any byte reaches the volume (AD-15): a submission for a
+        # document-requiring Leave Type that carries no document; a declared content type outside
+        # PDF/JPG/PNG; a payload over 5 MB (decided by a capped stream read, never Content-Length).
+        # The `UNIQUE (leave_request_id)` stays a backstop (AD-5) — the service decides
+        # attach-or-replace first, so no IntegrityError surfaces as a raw 500.
+        vocabulary.SUPPORTING_DOCUMENT_REQUIRED: 400,
+        vocabulary.UNSUPPORTED_FILE_TYPE: 400,
+        vocabulary.FILE_TOO_LARGE: 400,
     }
 )

@@ -69,19 +69,42 @@ def _to_views(rows: list) -> list[BalanceView]:  # type: ignore[type-arg]
     ]
 
 
-def list_own_balances(actor: Employee) -> list[BalanceView]:
+def list_own_balances(
+    actor: Employee,
+    *,
+    session: Session | None = None,
+    leave_year: int | None = None,
+) -> list[BalanceView]:
     """Return the CALLER's own current-year balances (FR-07, scope `self`).
 
     Scope `SELF` is intrinsic to the token subject (like `GET /me`): `employee_id = actor.id`,
     and the `SELF` predicate (`Employee.id == actor.id`) is the whole enforcement. The rows are
     a bounded set (one per Leave Type), returned as a plain list, not a `Page`.
+
+    `session`/`leave_year` (code review 2026-07-15): a composite read like the Employee
+    dashboard passes BOTH — its figures must come from ONE session (one snapshot, not two reads
+    a concurrent commit can land between) and ONE clock read (its echoed `leave_year` must name
+    the year these balances were read for, not a second `today()` taken after them). Standalone
+    callers (`GET /balances`) pass neither and get the original behavior: a private session and
+    this module's own clock.
     """
+    year = _current_leave_year() if leave_year is None else leave_year
+    if session is not None:
+        return _to_views(
+            leave_balance_repo.list_balances(
+                session,
+                actor,
+                employee_id=actor.id,
+                leave_year=year,
+                scope=Scope.SELF,
+            )
+        )
     with Session(get_engine(), expire_on_commit=False) as session:
         rows = leave_balance_repo.list_balances(
             session,
             actor,
             employee_id=actor.id,
-            leave_year=_current_leave_year(),
+            leave_year=year,
             scope=Scope.SELF,
         )
         return _to_views(rows)

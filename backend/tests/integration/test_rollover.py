@@ -38,7 +38,7 @@ import psycopg
 import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
-from sqlalchemy import Connection, Engine, delete, func, select
+from sqlalchemy import Connection, Engine, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.core import security
@@ -46,6 +46,7 @@ from app.domain import vocabulary
 from app.main import app
 from app.repositories.engine import get_engine
 from app.repositories.models import (
+    AdminReviewFlag,
     AuditEntry,
     CancellationRequest,
     Department,
@@ -53,6 +54,7 @@ from app.repositories.models import (
     LeaveBalance,
     LeaveRequest,
     LeaveType,
+    Notification,
     RolloverRun,
 )
 from app.services import leave_types as leave_types_service
@@ -252,6 +254,31 @@ def world(db_connection: Connection, owner_engine: Engine) -> Iterator[_World]:
                     CancellationRequest.leave_request_id.in_(lr_ids)
                 )
             )
+            # Story 3.4 (Landmine 16): notification rows FIRST. Every submission/decision through
+            # the API now writes one, and it FK-references BOTH `leave_request` and `employee` with
+            # NO `ON DELETE` clause (by decision — an Employee is deactivated, never deleted; a
+            # Leave Request has no DELETE endpoint). So deleting either parent first raises
+            # `ForeignKeyViolation` and errors this whole module. Deleting them explicitly, ahead of
+            # their parents, is the sanctioned fix — NOT granting the app role `DELETE` (this block
+            # already runs as the owner) and NOT `ON DELETE CASCADE` (it would signal a deletion
+            # path the product forbids). Every recipient is one of this fixture's own Employees.
+            session.execute(
+                delete(Notification).where(
+                    Notification.recipient_employee_id.in_(
+                        select(Employee.id).where(Employee.email.like(f"%{suffix}%"))
+                    )
+                )
+            )
+            # `admin_review_flag` holds NOT NULL FKs to BOTH `employee` and `leave_type`, and since
+            # Story 3.4's Task 11 a REFUSED carry-forward recompute writes one from the SUBMIT path —
+            # so this world can now produce flags where it never could before. Same reasoning and same
+            # ordering as the notifications above: delete the children before their parents, or the
+            # `Employee`/`LeaveType` deletes below raise `ForeignKeyViolation` and take the module red.
+            session.execute(
+                delete(AdminReviewFlag).where(
+                    AdminReviewFlag.leave_type_id.in_(leave_type_ids)
+                )
+            )
             session.execute(
                 delete(LeaveRequest).where(LeaveRequest.leave_type_id.in_(leave_type_ids))
             )
@@ -289,6 +316,26 @@ def _balance(
                 LeaveBalance.leave_year == leave_year,
             )
         ).first()
+
+
+def _flags(
+    employee_id: uuid.UUID, leave_type_id: uuid.UUID
+) -> list[AdminReviewFlag]:
+    """Every `admin_review_flag` for the pair (Story 3.4, Task 11).
+
+    A REFUSED carry-forward recompute writes one of these instead of letting `set_accrual`'s bare
+    `ValueError` escape as a raw 500. Before Task 11 this table was unreachable from the rollover
+    tests; it is the whole point of the two AD-6 tests below.
+    """
+    with Session(get_engine()) as session:
+        return list(
+            session.scalars(
+                select(AdminReviewFlag).where(
+                    AdminReviewFlag.employee_id == employee_id,
+                    AdminReviewFlag.leave_type_id == leave_type_id,
+                )
+            ).all()
+        )
 
 
 def _carried(employee_id: uuid.UUID, leave_type_id: uuid.UUID) -> int:
@@ -475,6 +522,232 @@ def test_ac6_reserved_days_do_not_carry_at_the_boundary_and_top_up_on_reject(
         "`leave_requests._decide` did not fire — or it recomputed from the CURRENT year instead of "
         "`row.start_date.year`, which is the same bug wearing a different hat."
     )
+
+
+# --- Story 3.4, Task 11: the AD-6 SUBMIT gap, closed ------------------------------------------
+#
+# AD-6 requires `carried_forward` be re-derived on "every event that can change its inputs", and its
+# only input is `available(Y)`. Story 2.10 wired the recompute into the three sites where
+# `available(Y)` RISES and missed the one where it FALLS: SUBMISSION. Five stories deferred the fix
+# (2.11 #8 → 2.12 #11 → 3.1 #6 → 3.2 #4 → 3.3 #7) and named Story 3.4 the forcing point.
+
+
+def test_ad6_a_submission_after_the_rollover_re_derives_carry_forward(
+    world: _World,
+) -> None:
+    """🆕 Task 11's PRIMARY MANDATE: submitting a year-`Y` request lowers `carried_forward(Y+1)`.
+
+    This is `test_ac6_reserved_days_do_not_carry_at_the_boundary_and_top_up_on_reject` run in the
+    OTHER order, and that reordering is the entire bug:
+
+      1. NOTHING is reserved, so the rollover carries the full 20. (`run_rollover` has no clock and
+         only WARNS when rolling a still-open year, so this is a permitted, reachable state.)
+      2. ONLY THEN is a 3-day year-`Y` request submitted. `reserve` LOWERS `available(Y)` 20 → 17.
+      3. `carried_forward(Y+1)` must therefore be re-derived to **17**.
+
+    Before Task 11 it stayed at **20** — a stored balance overstating what the Employee actually has,
+    with nothing in the system to ever correct it. It is the wrong-and-believed balance PRD §1 is a
+    promise against, and it is silent: no error, no flag, no log.
+
+    The mirror-image of beat 3 in the AC6 test above, and the reason `recompute_carry_forward` now has
+    a fourth call site.
+    """
+    rollover.run_rollover(_YEAR)
+
+    # Nothing reserved yet, so the full entitlement carried.
+    assert _carried(world.report_id, world.carry_id) == _ENTITLEMENT == 20
+
+    # NOW submit. `available(Y)` falls 20 → 17.
+    _submit(world.report_token, world.carry_id, weeks_out=1)
+
+    source = _balance(world.report_id, world.carry_id, _YEAR)
+    assert source is not None
+    assert source.reserved == _EXPECTED_DAYS
+
+    assert _carried(world.report_id, world.carry_id) == _ENTITLEMENT - _EXPECTED_DAYS == 17, (
+        "AD-6 (Story 3.4, Task 11): submitting a year-Y request AFTER the rollover has run LOWERS "
+        "available(Y), so carried_forward(Y+1) must be re-derived DOWN to match. If this is still 20, "
+        "the recompute hook in `leave_requests.submit_leave_request` did not fire — the exact gap "
+        "five stories deferred, and the balance is now overstated by 3 days."
+    )
+
+    # And no flag: the recompute SUCCEEDED, so there was nothing to tell an Admin about.
+    assert _flags(world.report_id, world.carry_id) == []
+
+
+def test_ad6_a_submission_that_cannot_reconcile_is_flagged_and_still_commits(
+    world: _World,
+) -> None:
+    """🚨 Task 11's SAFETY PROPERTY — and the reason the naive one-line fix was refused.
+
+    `deferred-work.md:67,75` prescribed exactly one thing: "add a fourth `recompute_carry_forward`
+    call in `submit_leave_request`." That call, WITHOUT a forward check, is a NEW RAW 500 on the
+    most-trafficked write path in the application — because submit is the only caller that LOWERS
+    `carried_forward(Y+1)`, and lowering `accrued(Y+1)` below what year `Y+1` has already spent trips
+    `set_accrual`'s bare `ValueError`, for which NO handler exists.
+
+    Constructed here exactly so: `Y+1` is spent to the last day, and then a year-`Y` request is
+    submitted. The re-derivation would drive `available(Y+1)` NEGATIVE.
+
+    What must happen — and what this pins:
+
+      * the submission is **`201`**, NOT a 500 and NOT a refusal. Declining an Employee's leave over a
+        carry-forward artifact in a LATER year would be indefensible, and no error code exists for it;
+      * **no balance is written** — the pair is left exactly as it was;
+      * an **`admin_review_flag`** is raised, carrying `CAUSE_SUBMISSION_RECALCULATION`, so the
+        condition the system cannot reconcile reaches an Admin instead of the applicant.
+    """
+    rollover.run_rollover(_YEAR)
+    assert _carried(world.report_id, world.carry_id) == _ENTITLEMENT
+
+    # Spend `Y+1` to the last day: accrued(Y+1) = prorated(20) + carried(20) = 40, all 40 consumed.
+    with Session(get_engine()) as session:
+        session.execute(
+            update(LeaveBalance)
+            .where(
+                LeaveBalance.employee_id == world.report_id,
+                LeaveBalance.leave_type_id == world.carry_id,
+                LeaveBalance.leave_year == _NEXT_YEAR,
+            )
+            .values(consumed=40)
+        )
+        session.commit()
+
+    before = _balance(world.report_id, world.carry_id, _NEXT_YEAR)
+    assert before is not None
+    assert before.accrued - before.consumed - before.reserved == 0  # available(Y+1) == 0
+
+    # The submission. Its recompute WOULD drive available(Y+1) to −3, so the forward check refuses.
+    response = _client.post(
+        "/api/v1/leave-requests",
+        headers=_auth(world.report_token),
+        json={
+            "leave_type_id": str(world.carry_id),
+            "start_date": _workweek(1)[0].isoformat(),
+            "end_date": _workweek(1)[1].isoformat(),
+        },
+    )
+
+    # 201 — the applicant is never the one who pays for this.
+    assert response.status_code == 201, response.text
+
+    # The balance is UNTOUCHED: still the stale 20, because a refusal writes nothing. The arithmetic
+    # genuinely cannot be reconciled here, and Task 11 does not pretend otherwise — it makes the
+    # condition VISIBLE instead of silent.
+    assert _carried(world.report_id, world.carry_id) == _ENTITLEMENT == 20
+
+    after = _balance(world.report_id, world.carry_id, _NEXT_YEAR)
+    assert after is not None
+    assert (after.accrued, after.consumed, after.reserved) == (
+        before.accrued,
+        before.consumed,
+        before.reserved,
+    )
+
+    # ...and an Admin is told, with the cause naming the event that discovered it.
+    flags = _flags(world.report_id, world.carry_id)
+    assert len(flags) == 1
+    assert flags[0].cause == vocabulary.CAUSE_SUBMISSION_RECALCULATION
+    assert flags[0].leave_year == _YEAR
+
+    # DEDUPE (code review 2026-07-15): a SECOND submission against the same unreconcilable pair is
+    # the same underlying defect, not a new fact. It still commits (201) and it still writes no
+    # balance — but the register does NOT grow a second identical row. One standing flag per
+    # (pair, year, cause); the queue the Admin triages must not fill with copies.
+    second = _client.post(
+        "/api/v1/leave-requests",
+        headers=_auth(world.report_token),
+        json={
+            "leave_type_id": str(world.carry_id),
+            "start_date": _workweek(2)[0].isoformat(),
+            "end_date": _workweek(2)[1].isoformat(),
+        },
+    )
+    assert second.status_code == 201, second.text
+    assert len(_flags(world.report_id, world.carry_id)) == 1
+
+
+def test_a_refused_pair_does_not_abort_the_rollover_batch(world: _World) -> None:
+    """🚨 The batch-abort face of the stale-pair defect dies here (code review 2026-07-15).
+
+    Task 11 guarded `recompute_carry_forward`, but `run_rollover`'s own loop writes `Y+1` through
+    `set_accrual` DIRECTLY — so a pair whose `Y+1` is too spent to absorb a lowered accrual made a
+    legal AC5 RE-RUN abort the entire org-wide transaction on one guarded `ValueError`. This is the
+    coverage the deleted canary's step 4 ("the next `run_rollover` aborts its whole batch on the
+    same row") lost when it was replaced.
+
+    Constructed like the AD-6 submit test: `Y+1` spent to the last day, then `available(Y)` lowered
+    OUT OF BAND so the re-run derives a smaller carry-forward than `Y+1` has already consumed.
+
+    What must happen — and what this pins:
+
+      * the re-run **completes** — no exception, a second `rollover_run` row, and every OTHER pair
+        still written (`balances_written` covers the rest of the matrix);
+      * the refused pair is **left exactly as it was** — no balance write;
+      * ONE `admin_review_flag` with `CAUSE_ROLLOVER_RECALCULATION` — and a THIRD run appends no
+        duplicate (the register dedupes per pair, year and cause).
+    """
+    rollover.run_rollover(_YEAR)
+    assert _carried(world.report_id, world.carry_id) == _ENTITLEMENT
+
+    with Session(get_engine()) as session:
+        # Spend `Y+1` to the last day: accrued(Y+1) = prorated(20) + carried(20) = 40.
+        session.execute(
+            update(LeaveBalance)
+            .where(
+                LeaveBalance.employee_id == world.report_id,
+                LeaveBalance.leave_type_id == world.carry_id,
+                LeaveBalance.leave_year == _NEXT_YEAR,
+            )
+            .values(consumed=40)
+        )
+        # ...and lower `available(Y)` out of band, so the re-run derives carried = 15: the new
+        # accrued(Y+1) would be 20 + 15 = 35 < 40 consumed — exactly the arithmetic `set_accrual`
+        # refuses with its guarded `ValueError`.
+        session.execute(
+            update(LeaveBalance)
+            .where(
+                LeaveBalance.employee_id == world.report_id,
+                LeaveBalance.leave_type_id == world.carry_id,
+                LeaveBalance.leave_year == _YEAR,
+            )
+            .values(consumed=5)
+        )
+        session.commit()
+
+    before = _balance(world.report_id, world.carry_id, _NEXT_YEAR)
+    assert before is not None
+    runs_before = _rollover_run_count()
+
+    # The re-run. Before the batch guard this raised `ValueError` and rolled back EVERYTHING.
+    summary = rollover.run_rollover(_YEAR)
+
+    assert summary.refused_pairs == 1
+    assert _rollover_run_count() == runs_before + 1, (
+        "the batch must COMMIT — one refused pair is a flag, not an abort"
+    )
+    # The rest of the matrix still rolled: every pair except the refused one was written.
+    assert summary.balances_written > 0
+
+    # The refused pair is untouched — a refusal writes nothing.
+    after = _balance(world.report_id, world.carry_id, _NEXT_YEAR)
+    assert after is not None
+    assert (after.carried_forward, after.consumed, after.reserved) == (
+        before.carried_forward,
+        before.consumed,
+        before.reserved,
+    )
+
+    # An Admin is told once, with the cause naming the batch.
+    flags = _flags(world.report_id, world.carry_id)
+    assert len(flags) == 1
+    assert flags[0].cause == vocabulary.CAUSE_ROLLOVER_RECALCULATION
+    assert flags[0].leave_year == _YEAR
+
+    # A THIRD run: still refused, still ONE flag — the register does not fill with copies.
+    again = rollover.run_rollover(_YEAR)
+    assert again.refused_pairs == 1
+    assert len(_flags(world.report_id, world.carry_id)) == 1
 
 
 def test_ac6_approval_never_claws_back_the_carry_forward(world: _World) -> None:

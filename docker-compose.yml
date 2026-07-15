@@ -97,6 +97,14 @@ services:
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?missing — cp .env.example .env and edit it}
       SEED_ADMIN_FULL_NAME: ${SEED_ADMIN_FULL_NAME:?missing — cp .env.example .env and edit it}
       SEED_DEPARTMENT_NAME: ${SEED_DEPARTMENT_NAME:?missing — cp .env.example .env and edit it}
+      # Story 4.1 (AD-15, NFR-05): where supporting documents are written — the named
+      # volume below, OUTSIDE the web root. Only the authorized GET endpoint reaches it;
+      # no static route maps to this path.
+      DOCUMENTS_DIR: /srv/documents
+    volumes:
+      # Uploaded supporting documents (Story 4.1). A named volume, not a bind mount:
+      # the files never touch the working tree, and they survive a container rebuild.
+      - documents:/srv/documents
     depends_on:
       postgres:
         # `condition: service_healthy` ERRORS if the referenced service declares no
@@ -143,10 +151,12 @@ services:
       - postgres_data:/var/lib/postgresql
     restart: unless-stopped
 
-# `scheduler` (cron, for the Story 2.10 rollover) and the documents volume (Story 4.1)
-# are DEFERRED. They are not scaffolded here as empty services: an empty service that
-# does nothing is indistinguishable, to the next reader, from a service that is broken.
+# `scheduler` (cron, for the Story 2.10 rollover) is DEFERRED. It is not scaffolded
+# here as an empty service: an empty service that does nothing is indistinguishable,
+# to the next reader, from a service that is broken. (The documents volume, deferred
+# by the same note through Epic 3, landed with Story 4.1 — see the api service.)
 
 volumes:
   postgres_data:
   proxy_certs:
+  documents:

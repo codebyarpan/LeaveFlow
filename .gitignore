@@ -10,6 +10,10 @@ certs/
 *.crt
 *.pem
 
+# Uploaded supporting documents, host-side default (Story 4.1, AD-15). Runtime
+# data, never source; the deployed path is the compose `documents` volume.
+backend/var/
+
 # Python
 __pycache__/
 .venv/

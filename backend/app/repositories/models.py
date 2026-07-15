@@ -655,3 +655,172 @@ class PolicyChange(Base):
             name="policy_change_disposition_check",
         ),
     )
+
+
+class Notification(Base):
+    """An in-app Notification — the FIRST table here that is not append-only (Story 3.4).
+
+    Implements: FR-14 (a Manager learns a decision is waiting; an applicant learns theirs was made),
+    AD-16 (the governing decision, all four clauses: a Notification carries a recipient, a `kind`
+    discriminator, the Leave Request it concerns, a nullable `read_at` and `created_at`; the unread
+    count is `COUNT(*) WHERE read_at IS NULL` and is NEVER stored; the service that performs a
+    transition is the service that writes its Notification, INSIDE that transition's transaction, so
+    one exists if and only if the transition committed; mark-read is an idempotent `PATCH` permitted
+    only to its addressee), AD-8 (a Notification is NOT an audit row — see below), NFR-09. AC1. SM-6.
+
+    - `recipient_employee_id` — WHO it is addressed to. NOT NULL, and that is load-bearing: AC4's
+      managerless applicant writes NO `REQUEST_SUBMITTED` "because it would have no addressee", so
+      the naive unconditional insert hits this constraint rather than quietly storing a headless row.
+    - `leave_request_id` — WHICH Leave Request it concerns. NOT NULL; all three kinds concern one.
+    - `kind` — `REQUEST_SUBMITTED`, `REQUEST_APPROVED` or `REQUEST_REJECTED`, under a three-value
+      CHECK. EXACTLY three: `services/cancellation.py` writes ZERO Notifications (readiness F-4,
+      epics.md:473 — an Admin discovers a Cancellation Request through `GET /cancellation-requests`,
+      not a notification), and the `reviews/` proposal to add `CANCELLATION_*` kinds was NOT adopted.
+    - `read_at` — the ONLY nullable column and the ONLY mutable one. NULL ⇒ unread. There is no
+      stored `is_read` flag and no stored count; both would be a second source of truth for a fact
+      this column already carries (AD-16).
+    - `created_at` — the moment, a `TIMESTAMPTZ` from the service shell (AD-1).
+
+    --- It is NOT `audit_entry`, and there is no `SUBJECT_NOTIFICATION` ---
+
+    A Notification is not a state transition — it is a consequence of one. AD-8 reserves
+    `audit_entry` for "exactly one row per state transition of a Leave Request or a Cancellation
+    Request, AND NOTHING ELSE", and that last clause is what keeps SM-4's exact count (14 rows, with
+    its per-`subject_type` breakdown) literally true. `rollover_run`, `admin_review_flag` and
+    `policy_change` each got their own table for precisely this reason; `notification` is the log of
+    itself. Echoing `services/rollover.py`: there is no `SUBJECT_NOTIFICATION` and there must not be
+    one. This story adds ZERO `insert_audit_entry` call sites.
+
+    --- The append-only rule does NOT apply here (AD-9), and the grant says so ---
+
+    AD-9's append-only list is exactly `audit_entry` and `rollover_run`. `read_at` is mutable, so
+    `0012` grants the application role `SELECT, INSERT, UPDATE` — NOT the `INSERT, SELECT` shape
+    `0009`/`0010`/`0011` all used. `DELETE` is still withheld (no requirement deletes a
+    Notification). Copying the append-only grant would leave `PATCH …/read` failing at RUNTIME with
+    `InsufficientPrivilege` while the unit suite stayed green.
+
+    --- The partial index ---
+
+    `ix_notification_recipient_unread` on `recipient_employee_id WHERE read_at IS NULL` (AC1, ERD
+    §4.4) — the codebase's FIRST partial index. It indexes exactly the set AD-16's unread count
+    counts. ⚠️ `alembic check` CANNOT see the predicate (Alembic 1.18.5 never compares
+    `postgresql_where`), so a plain non-partial index here would pass every schema guard while
+    silently failing AC1 — `tests/integration/test_notifications.py` asserts the predicate against
+    `pg_indexes.indexdef`, and it is the only thing that does.
+
+    Byte-for-byte faithful to `0012_notification`, like every model here — `alembic check` (run by
+    `tests/integration/test_model_migration_agreement.py`) emits an empty diff only while they agree.
+    """
+
+    __tablename__ = "notification"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        server_default=text("uuidv7()"),
+    )
+    # No `ON DELETE` clause on either FK: an Employee is deactivated, never deleted (AD-22), and a
+    # Leave Request has no DELETE endpoint. `ON DELETE CASCADE` would signal a deletion path the
+    # product forbids (integration teardowns delete these rows explicitly instead — Task 8b).
+    recipient_employee_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("employee.id"), nullable=False
+    )
+    leave_request_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leave_request.id"), nullable=False
+    )
+    # A `vocabulary.NOTIFICATION_*` constant, never a bare literal (AD-21).
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    # The one nullable, mutable column — NULL means unread. `DateTime(timezone=True)` is MANDATORY
+    # and explicit: a bare `Mapped[datetime | None]` would map to a naive `TIMESTAMP` and drop the
+    # offset the instant must retain (the `audit_entry.occurred_at` note).
+    read_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        # AD-5 backstop — the services write `vocabulary.NOTIFICATION_*` constants and this CHECK
+        # never gates. Name byte-identical to the migration. TEXT + CHECK, never a PG ENUM.
+        CheckConstraint(
+            "kind IN ('REQUEST_SUBMITTED', 'REQUEST_APPROVED', 'REQUEST_REJECTED')",
+            name="notification_kind_check",
+        ),
+        # The PARTIAL index (AC1, ERD §4.4) — name and predicate byte-identical to the migration.
+        Index(
+            "ix_notification_recipient_unread",
+            "recipient_employee_id",
+            postgresql_where=text("read_at IS NULL"),
+        ),
+        # The LIST index (code review 2026-07-15): the paged `GET /notifications` reads all of a
+        # recipient's rows newest-first, and read rows fall OUTSIDE the partial predicate above.
+        Index(
+            "ix_notification_recipient_created",
+            "recipient_employee_id",
+            "created_at",
+            "id",
+        ),
+        # The `leave_request_id` FK — teardowns and any by-request lookup scan without it.
+        Index("ix_notification_leave_request", "leave_request_id"),
+    )
+
+
+class SupportingDocument(Base):
+    """The document a Leave Request carries as evidence (Story 4.1, FR-13, NFR-05, AD-15).
+
+    Implements: AC1 — `leave_request_id` under a NAMED `UNIQUE (leave_request_id)` (a request
+    carries at most one document, ERD §2.1/§4.2), `storage_name` (the server-generated UUID the
+    file on the volume is named after — `str(uuid)`, NO extension: an extension would be derived
+    from client input, the thing AD-15 forbids in paths; the stored `content_type` serves the
+    stream), `original_filename` (the client's filename, persisted VERBATIM as DATA — it never
+    becomes a path component, and on GET it leaves only inside an RFC 5987-encoded
+    `Content-Disposition` header), and `content_type` (the declared type the upload validated
+    against). SM-6.
+
+    Deliberately ABSENT — each a decision, not an omission:
+
+    - NO `size_bytes` (AC1 pins the absence): size is validated BEFORE the bytes are written
+      (`FILE_TOO_LARGE` fires first), and no requirement reads it afterwards.
+    - NO timestamp: the ERD names none. An upload is not a state transition — it writes no
+      audit row (AD-8; SM-4's exact count of 14 stays literally true) and no notification.
+    - NO `content_type` CHECK (Open Decision #7): erd.md §4.2 lists exactly one constraint for
+      this table (the UNIQUE). The allowlist is service-layer policy declared once in
+      `domain/vocabulary.py`; a CHECK would be a second copy. This diverges from the
+      `notification.kind` precedent because THERE the ERD named the CHECK; here it does not.
+    - NO index beyond the UNIQUE (which serves the one lookup, by `leave_request_id`).
+
+    The UNIQUE is the AD-5 BACKSTOP, never the gate: `services/documents.py` resolves
+    existing-document state (attach-or-replace while PENDING, OD#2) under the request's row
+    locate before writing, so a second upload is a decided UPDATE, never an `IntegrityError`
+    surfacing as a raw 500. The FK carries no `ON DELETE` clause (a Leave Request has no DELETE
+    endpoint — the `notification` reasoning): teardowns delete document rows FIRST and unlink
+    the files those rows name, because files outlive rows.
+
+    Byte-for-byte faithful to `0013_supporting_document`, like every model here — `alembic
+    check` (run by `tests/integration/test_model_migration_agreement.py`) emits an empty diff
+    only while they agree, including the UNIQUE constraint's name.
+    """
+
+    __tablename__ = "supporting_document"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        server_default=text("uuidv7()"),
+    )
+    # The ONE request this document evidences. UNIQUE below; no `ON DELETE` clause.
+    leave_request_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leave_request.id"), nullable=False
+    )
+    # Server-generated; the file on the volume is `str(storage_name)`, no extension (AD-15).
+    storage_name: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    # Client-supplied, persisted verbatim as DATA — never a path component (NFR-05).
+    original_filename: Mapped[str] = mapped_column(Text, nullable=False)
+    # The declared type the upload validated against; serves the GET's Content-Type.
+    content_type: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        # ERD §4.2's one constraint — name byte-identical to the migration (`alembic check`).
+        UniqueConstraint(
+            "leave_request_id", name="supporting_document_leave_request_id_key"
+        ),
+    )

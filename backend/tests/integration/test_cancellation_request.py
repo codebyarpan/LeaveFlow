@@ -43,6 +43,7 @@ from app.repositories.models import (
     LeaveBalance,
     LeaveRequest,
     LeaveType,
+    Notification,
 )
 from app.services import leave_types as leave_types_service
 
@@ -225,6 +226,21 @@ def world(db_connection: Connection, owner_engine: Engine) -> Iterator[_World]:
             session.execute(
                 delete(CancellationRequest).where(
                     CancellationRequest.leave_request_id.in_(lr_ids)
+                )
+            )
+            # Story 3.4 (Landmine 16): notification rows FIRST. Every submission/decision through
+            # the API now writes one, and it FK-references BOTH `leave_request` and `employee` with
+            # NO `ON DELETE` clause (by decision — an Employee is deactivated, never deleted; a
+            # Leave Request has no DELETE endpoint). So deleting either parent first raises
+            # `ForeignKeyViolation` and errors this whole module. Deleting them explicitly, ahead of
+            # their parents, is the sanctioned fix — NOT granting the app role `DELETE` (this block
+            # already runs as the owner) and NOT `ON DELETE CASCADE` (it would signal a deletion
+            # path the product forbids). Every recipient is one of this fixture's own Employees.
+            session.execute(
+                delete(Notification).where(
+                    Notification.recipient_employee_id.in_(
+                        select(Employee.id).where(Employee.email.like(f"%{suffix}%"))
+                    )
                 )
             )
             session.execute(

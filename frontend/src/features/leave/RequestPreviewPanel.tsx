@@ -21,6 +21,10 @@ import { type FormEvent, useState } from 'react'
 
 import { ApiError, useLeaveTypes, usePreviewLeaveRequest, useSubmitLeaveRequest } from '../../api'
 
+// The pre-check policy (Story 4.1, NFR-17): one frontend copy, shared with the history
+// panel's attach control since the 2026-07-15 code review; the server remains the guard.
+import { DOCUMENT_ACCEPTED_TYPES, DOCUMENT_MAX_BYTES } from './documentPolicy'
+
 /** The one reason string this screen matches on to name a holiday. Displayed, never computed. */
 const HOLIDAY_REASON = 'HOLIDAY'
 
@@ -64,6 +68,10 @@ export function RequestPreviewPanel() {
   const submit = useSubmitLeaveRequest()
 
   const [form, setForm] = useState({ ...EMPTY_FORM })
+  // Story 4.1 (AC6): the picked document and, when a pick was refused, WHY (NFR-17 — a
+  // rejected file states its reason). Both live beside the form fields and clear with them.
+  const [documentFile, setDocumentFile] = useState<File | null>(null)
+  const [documentError, setDocumentError] = useState<string | null>(null)
 
   function updateField(field: keyof typeof form, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }))
@@ -72,7 +80,41 @@ export function RequestPreviewPanel() {
     // 2026-07-13). The whole point of this screen is to show the state OF THE CURRENT REQUEST.
     if (preview.data !== undefined || preview.isError) preview.reset()
     if (submit.data !== undefined || submit.isError) submit.reset()
+    // A different leave type may not want the picked file at all — clear it with the choice,
+    // exactly as the preview clears: the file belongs to THE CURRENT REQUEST.
+    if (field === 'leave_type_id') {
+      setDocumentFile(null)
+      setDocumentError(null)
+    }
   }
+
+  /** Pre-check the pick and STATE THE REASON on refusal (NFR-17); the server stays the guard. */
+  function updateDocument(file: File | null) {
+    if (preview.data !== undefined || preview.isError) preview.reset()
+    if (submit.data !== undefined || submit.isError) submit.reset()
+    if (file === null) {
+      setDocumentFile(null)
+      setDocumentError(null)
+      return
+    }
+    if (!DOCUMENT_ACCEPTED_TYPES.includes(file.type)) {
+      setDocumentFile(null)
+      setDocumentError('That file type is not accepted — upload a PDF, JPG or PNG.')
+      return
+    }
+    if (file.size > DOCUMENT_MAX_BYTES) {
+      setDocumentFile(null)
+      setDocumentError('That file is larger than the 5 MB limit.')
+      return
+    }
+    setDocumentFile(file)
+    setDocumentError(null)
+  }
+
+  const selectedLeaveType = (leaveTypes.data?.items ?? []).find(
+    (leaveType) => leaveType.id === form.leave_type_id,
+  )
+  const documentRequired = selectedLeaveType?.requires_supporting_document === true
 
   const requiredFilled =
     form.leave_type_id !== '' && form.start_date !== '' && form.end_date !== ''
@@ -95,6 +137,10 @@ export function RequestPreviewPanel() {
         leave_type_id: form.leave_type_id,
         start_date: form.start_date,
         end_date: form.end_date,
+        // Story 4.1: a picked file rides the SAME submission as multipart (OD#1); no file
+        // keeps the JSON request exactly as it always was. The server enforces the
+        // requirement (SUPPORTING_DOCUMENT_REQUIRED) — this only sends what was picked.
+        document: documentFile,
       },
       {
         // Once the request is reserved, the previewed `available_after` is stale — it predates the
@@ -103,6 +149,10 @@ export function RequestPreviewPanel() {
         // 2026-07-13).
         onSuccess: () => {
           if (preview.data !== undefined || preview.isError) preview.reset()
+          // The picked file belongs to the request JUST submitted — it must not silently
+          // ride a future submission as someone else's evidence (2026-07-15 code review).
+          setDocumentFile(null)
+          setDocumentError(null)
         },
       },
     )
@@ -169,7 +219,36 @@ export function RequestPreviewPanel() {
               required
             />
           </label>
+          {documentRequired && (
+            /* Story 4.1 (AC6): this leave type requires evidence — surface the control the
+               moment the type is picked, and say why it is there. Zero new CSS (`emp-field`).
+               The `accept` attribute is a picker hint; `updateDocument` is the pre-check that
+               STATES THE REASON on a rejected file (NFR-17), and the server remains the guard. */
+            <label className="emp-field">
+              Supporting document
+              <input
+                /* The native input keeps its own filename display; remount it whenever the
+                   picked file is programmatically cleared — a leave-type change or a
+                   successful submit — so the display never contradicts the cleared state
+                   (2026-07-15 code review). */
+                key={`${form.leave_type_id}:${submitted?.id ?? ''}`}
+                type="file"
+                accept={DOCUMENT_ACCEPTED_TYPES.join(',')}
+                onChange={(event) => updateDocument(event.target.files?.[0] ?? null)}
+              />
+              <span className="muted">
+                {documentFile
+                  ? documentFile.name
+                  : 'This leave type requires a document — PDF, JPG or PNG, up to 5 MB.'}
+              </span>
+            </label>
+          )}
         </div>
+        {documentError && (
+          <p className="emp-error" role="alert">
+            {documentError}
+          </p>
+        )}
         <div className="emp-form-actions">
           <button type="submit" disabled={preview.isPending || leaveTypesUnavailable}>
             {preview.isPending ? 'Previewing…' : 'Preview'}

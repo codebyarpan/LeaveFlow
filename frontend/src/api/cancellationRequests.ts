@@ -16,6 +16,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from './client'
 import { BALANCES_QUERY_KEY } from './balances'
+// Story 3.5. A value import that cannot cycle: `dashboard.ts` imports only `client` and a type.
+import { DASHBOARD_QUERY_KEY } from './dashboard'
 import { LEAVE_REQUESTS_QUERY_KEY } from './leaveRequests'
 // `Page<T>` has a single home in `departments.ts`; every later list endpoint reuses that type.
 import type { Page } from './departments'
@@ -80,6 +82,9 @@ function invalidateAfterCancellation(queryClient: ReturnType<typeof useQueryClie
   void queryClient.invalidateQueries({ queryKey: CANCELLATION_REQUESTS_QUERY_KEY })
   void queryClient.invalidateQueries({ queryKey: LEAVE_REQUESTS_QUERY_KEY })
   void queryClient.invalidateQueries({ queryKey: BALANCES_QUERY_KEY })
+  // Story 3.5: an approved cancellation takes an Employee OFF approved leave and restores their
+  // Available — both dashboard figures. One prefix reaches all three roles' dashboards.
+  void queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY })
 }
 
 /**

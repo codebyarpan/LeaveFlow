@@ -125,40 +125,7 @@ export async function apiFetch<T>(path: `/${string}`, init?: RequestInit): Promi
   const response = await fetch(`${API_BASE_PATH}${path}`, { ...init, headers })
 
   if (!response.ok) {
-    // A non-2xx response is *contracted* to carry the envelope (NFR-17). It may still
-    // fail to — a proxy can return its own 502 HTML long before the application is
-    // reached — so decoding is attempted, not assumed.
-    let envelope: ErrorEnvelope = {
-      code: 'UNKNOWN_ERROR',
-      message: `The server responded ${response.status} without an error envelope.`,
-      details: {},
-    }
-
-    try {
-      const errorBody: unknown = await response.json()
-      if (isErrorEnvelope(errorBody)) {
-        envelope = {
-          code: errorBody.code,
-          message: errorBody.message,
-          details: asDetails(errorBody.details),
-        }
-      }
-    } catch {
-      // Body was absent or not JSON. Keep the synthesized envelope above.
-    }
-
-    // The server rejected the stored token (AC6). Clear it and signal `App` to return to
-    // the login screen. Gated on the CODE, not just the status (Trap 5): a wrong-password
-    // login is `401 AUTH_FAILED` and must NOT clear a session or sign anyone out — there
-    // is no session at login anyway. `clearToken` alone would not re-render `App` (its
-    // `token` state still holds the value), so the event is what actually drives the
-    // sign-out; `App` subscribes to it and flips its state.
-    if (response.status === 401 && envelope.code === TOKEN_INVALID_CODE) {
-      clearToken()
-      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT))
-    }
-
-    throw new ApiError(response.status, envelope)
+    throw await toApiError(response)
   }
 
   // An empty body is a success with nothing to decode — 204 by contract, but also a
@@ -168,4 +135,73 @@ export async function apiFetch<T>(path: `/${string}`, init?: RequestInit): Promi
   if (text === '') return undefined as T
 
   return JSON.parse(text) as T
+}
+
+/**
+ * Decode a non-2xx response into the typed `ApiError`, handling session expiry.
+ *
+ * The one refusal path both `apiFetch` and `apiFetchBlob` share (Story 4.1 factored it out
+ * rather than forking the client): a non-2xx response is *contracted* to carry the envelope
+ * (NFR-17), but may still fail to — a proxy can return its own 502 HTML long before the
+ * application is reached — so decoding is attempted, not assumed.
+ */
+async function toApiError(response: Response): Promise<ApiError> {
+  let envelope: ErrorEnvelope = {
+    code: 'UNKNOWN_ERROR',
+    message: `The server responded ${response.status} without an error envelope.`,
+    details: {},
+  }
+
+  try {
+    const errorBody: unknown = await response.json()
+    if (isErrorEnvelope(errorBody)) {
+      envelope = {
+        code: errorBody.code,
+        message: errorBody.message,
+        details: asDetails(errorBody.details),
+      }
+    }
+  } catch {
+    // Body was absent or not JSON. Keep the synthesized envelope above.
+  }
+
+  // The server rejected the stored token (AC6). Clear it and signal `App` to return to
+  // the login screen. Gated on the CODE, not just the status (Trap 5): a wrong-password
+  // login is `401 AUTH_FAILED` and must NOT clear a session or sign anyone out — there
+  // is no session at login anyway. `clearToken` alone would not re-render `App` (its
+  // `token` state still holds the value), so the event is what actually drives the
+  // sign-out; `App` subscribes to it and flips its state.
+  if (response.status === 401 && envelope.code === TOKEN_INVALID_CODE) {
+    clearToken()
+    window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT))
+  }
+
+  return new ApiError(response.status, envelope)
+}
+
+/**
+ * Issue a request whose SUCCESS body is raw bytes, not JSON (Story 4.1 — the document
+ * download is the app's first non-JSON 200).
+ *
+ * The `apiFetch` shape with the decode swapped: same Authorization handling, same typed
+ * `ApiError` on any non-2xx (the refusal envelope IS still JSON — only the success body
+ * differs), same session-expiry signalling. Returns the response as a `Blob`; the caller
+ * hands it to `URL.createObjectURL`. A 404 — "no document attached", byte-identical to a
+ * nonexistent request (AD-10) — surfaces as `ApiError` with `status === 404`.
+ */
+export async function apiFetchBlob(path: `/${string}`, init?: RequestInit): Promise<Blob> {
+  const headers = new Headers(init?.headers)
+
+  const token = getToken()
+  if (token !== null && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
+  const response = await fetch(`${API_BASE_PATH}${path}`, { ...init, headers })
+
+  if (!response.ok) {
+    throw await toApiError(response)
+  }
+
+  return response.blob()
 }

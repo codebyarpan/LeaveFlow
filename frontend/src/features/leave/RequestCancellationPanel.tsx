@@ -68,7 +68,7 @@ export function RequestCancellationPanel() {
   const isEmployee = me.data?.role === EMPLOYEE_ROLE
   // Gate both fetches on the resolved role (the `useLeaveRequests` idiom): a non-Employee, which
   // renders nothing below, never issues either request.
-  const approved = useLeaveRequests(APPROVED_STATUS, { enabled: isEmployee })
+  const approved = useLeaveRequests({ status: APPROVED_STATUS }, { enabled: isEmployee })
   const cancellations = useCancellationRequests(undefined, { enabled: isEmployee })
   const raise = useRaiseCancellationRequest()
 

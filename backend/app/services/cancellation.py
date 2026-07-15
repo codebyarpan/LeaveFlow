@@ -325,15 +325,27 @@ def approve_cancellation_request(
         # current calendar year would be wrong for a request cancelled after the boundary, which is
         # precisely the case DR-7a exists to handle. This writes NO audit row (AD-8): the two rows
         # below are the transitions, and a balance re-derivation is not one.
+        #
+        # `occurred_at` is read ONCE here and shared with the two audit rows below: the refund, any
+        # Admin-review flag the forward check raises, and both transitions are one atomic fact and
+        # should carry one instant (AD-1's shell clock). It moved UP from below purely because Story
+        # 3.4's Task 11 gave `recompute_carry_forward` a `cause`/`occurred_at` pair.
+        occurred_at = _now()
+
+        # `cause=CAUSE_TRANSITION_RECALCULATION` (Story 3.4, Task 11): this path RAISES `available(Y)`
+        # (`release_consumed`), so the forward check can only refuse when a PRIOR refused policy change
+        # left a stale cap on the pair — `deferred-work.md:74`'s live defect, which used to surface as
+        # a raw 500 here and now surfaces as a flag while this cancellation still commits.
         rollover.recompute_carry_forward(
             session,
             employee_id=row.employee_id,
             leave_type_id=row.leave_type_id,
             leave_year=row.start_date.year,
+            cause=vocabulary.CAUSE_TRANSITION_RECALCULATION,
+            occurred_at=occurred_at,
         )
 
         # Two audit rows, both in THIS transaction, discriminated by subject_type (AC9).
-        occurred_at = _now()
         audit_entry_repo.insert_audit_entry(
             session,
             subject_type=vocabulary.SUBJECT_CANCELLATION_REQUEST,

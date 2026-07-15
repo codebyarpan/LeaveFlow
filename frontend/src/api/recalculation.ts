@@ -25,6 +25,8 @@ import { useQueryClient } from '@tanstack/react-query'
 
 import { ADMIN_REVIEW_FLAGS_QUERY_KEY } from './adminReviewFlags'
 import { BALANCES_QUERY_KEY } from './balances'
+// Story 3.5. A value import that cannot cycle: `dashboard.ts` imports only `client` and a type.
+import { DASHBOARD_QUERY_KEY } from './dashboard'
 import { HOLIDAYS_QUERY_KEY } from './holidays'
 import { LEAVE_REQUESTS_QUERY_KEY } from './leaveRequests'
 import { LEAVE_TYPES_QUERY_KEY } from './leaveTypes'
@@ -76,7 +78,7 @@ export interface RecalculationSummary {
  * server has already corrected, which is precisely the "wrong figure that will be believed" (PRD §1)
  * these stories exist to prevent.
  *
- * Six keys, and the two extra ones are why this is a shared function rather than a copy per module.
+ * Seven keys, and the extra ones are why this is a shared function rather than a copy per module.
  * A holiday change cannot move `LEAVE_TYPES_QUERY_KEY` or `POLICY_CHANGES_QUERY_KEY`, but
  * invalidating them anyway costs one refetch of two small lists and removes an entire class of
  * "which keys does THIS mutation move again?" bug. Correctness over a saved request.
@@ -90,4 +92,7 @@ export function invalidateEverythingARecalculationMoves(
   void queryClient.invalidateQueries({ queryKey: ADMIN_REVIEW_FLAGS_QUERY_KEY })
   void queryClient.invalidateQueries({ queryKey: LEAVE_TYPES_QUERY_KEY })
   void queryClient.invalidateQueries({ queryKey: POLICY_CHANGES_QUERY_KEY })
+  // Story 3.5: a recalculation rewrites the balances a dashboard presents. Same reasoning as the
+  // two keys above — one refetch, and one less "which keys does THIS mutation move?" bug.
+  void queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY })
 }

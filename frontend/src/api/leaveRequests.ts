@@ -15,6 +15,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from './client'
 import { BALANCES_QUERY_KEY } from './balances'
+// The decision calendar's key (Story 3.3). `calendar.ts` imports only TYPES from this module,
+// so this value import cannot form a runtime cycle.
+import { CALENDAR_QUERY_KEY } from './calendar'
+// Story 3.4. A value import, and it cannot cycle: `notifications.ts` imports only `client` and the
+// `Page` TYPE from `departments`, never this module.
+import { NOTIFICATIONS_QUERY_KEY } from './notifications'
+// Story 3.5. A value import that cannot cycle either: `dashboard.ts` imports only `client` and the
+// `Balance` TYPE from `balances`, never this module.
+import { DASHBOARD_QUERY_KEY } from './dashboard'
 // `Page<T>` has a single home in `departments.ts` (the first list endpoint established it); every
 // later list endpoint reuses that type rather than re-declaring the envelope.
 import type { Page } from './departments'
@@ -64,13 +73,17 @@ export function usePreviewLeaveRequest() {
 }
 
 /**
- * The submission body — identical shape to the preview (the Leave Type and the inclusive range).
- * The server re-decides validity and the balance under lock; the client just posts the range.
+ * The submission body — the preview's shape (the Leave Type and the inclusive range) plus,
+ * since Story 4.1, an optional `document` File. The server re-decides validity and the balance
+ * under lock; the client just posts the range. A file present switches the wire format to
+ * `multipart/form-data` (OD#1 — how a document-requiring Leave Type is submittable in one
+ * request); absent, the request is byte-for-byte the JSON it always was.
  */
 export interface SubmitLeaveInput {
   leave_type_id: string
   start_date: string
   end_date: string
+  document?: File | null
 }
 
 /**
@@ -94,13 +107,39 @@ export interface LeaveRequestSubmission {
 export function useSubmitLeaveRequest() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (input: SubmitLeaveInput) =>
-      apiFetch<LeaveRequestSubmission>('/leave-requests', {
+    mutationFn: ({ document, ...fields }: SubmitLeaveInput) => {
+      // Story 4.1 (OD#1): a file rides the SAME submission as a multipart part — the json
+      // fields become form fields, the browser sets the boundary (`apiFetch` never labels a
+      // FormData body as JSON). Without a file the request is exactly the JSON it always was.
+      if (document instanceof File) {
+        const formData = new FormData()
+        formData.append('leave_type_id', fields.leave_type_id)
+        formData.append('start_date', fields.start_date)
+        formData.append('end_date', fields.end_date)
+        formData.append('document', document)
+        return apiFetch<LeaveRequestSubmission>('/leave-requests', {
+          method: 'POST',
+          body: formData,
+        })
+      }
+      return apiFetch<LeaveRequestSubmission>('/leave-requests', {
         method: 'POST',
-        body: JSON.stringify(input),
-      }),
+        body: JSON.stringify(fields),
+      })
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: BALANCES_QUERY_KEY })
+      // Story 3.4 — the ONE same-user notification case, and the only reason this key belongs here.
+      // A MANAGERLESS applicant's submission is auto-approved (FR-09) and writes a REQUEST_APPROVED
+      // addressed to THEMSELVES (AC4) — so the submitter IS the recipient, and without this their
+      // own badge would sit stale until `staleTime` expired. (A managed applicant's submission
+      // notifies their MANAGER, whose browser this is not; that one cannot be invalidated from here
+      // and is not meant to be — see `invalidateAfterDecision` below.)
+      void queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_QUERY_KEY })
+      // Story 3.5: a submission moves the caller's OWN dashboard — the pending count rises
+      // (or, managerless, they land on approved leave) and Available falls. Submit does NOT go
+      // through `invalidateAfterDecision`, so the dashboard key must be joined here too.
+      void queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY })
     },
   })
 }
@@ -125,28 +164,71 @@ export interface LeaveRequest {
 }
 
 /**
- * The base cache key for the leave-requests list. A per-`status` query caches under
- * `[...LEAVE_REQUESTS_QUERY_KEY, status]`, so a `PENDING` queue and an `APPROVED` view never share
- * an entry; a transition invalidates this BASE key, which TanStack matches by prefix — so every
- * status view refetches at once. One home keeps the queries and the mutations in agreement.
+ * The base cache key for the leave-requests list. Each filter/page combination caches under
+ * `[...LEAVE_REQUESTS_QUERY_KEY, filters]`, so a `PENDING` queue, an `APPROVED` view and every
+ * history page are distinct entries; a transition invalidates this BASE key, which TanStack
+ * matches by prefix — so every variant refetches at once. One home keeps the queries and the
+ * mutations in agreement.
  */
 export const LEAVE_REQUESTS_QUERY_KEY = ['leaveRequests'] as const
 
 /**
- * The scoped leave-requests list (FR-03). The server resolves scope from the caller's role — an
- * Employee sees their own, a Manager their Direct Reports', an Admin all — so this one hook serves
- * every role. An optional `status` narrows the page (the single filter this story grants).
- *
- * `options.enabled` gates the fetch (mirrors `useEmployees`): the Manager queue passes the resolved
- * `isManager` so a non-Manager, which renders nothing, never issues the request at all.
+ * The optional filters and page window for the leave-requests list (Story 3.1, FR-12). Every
+ * field is optional; an absent filter applies no predicate server-side, so an empty object is
+ * the caller's whole (scoped, cross-Leave-Year) history. `dateFrom`/`dateTo` are `YYYY-MM-DD`
+ * strings straight from an `<input type="date">`; the window selects by OVERLAP server-side.
+ * `page`/`pageSize` drive the shared envelope; the server clamps both.
  */
-export function useLeaveRequests(status?: string, options?: { enabled?: boolean }) {
+export interface LeaveRequestFilters {
+  status?: string
+  leaveTypeId?: string
+  dateFrom?: string
+  dateTo?: string
+  page?: number
+  pageSize?: number
+}
+
+/**
+ * Each filter's wire name, in one place so the query string and the backend stay in agreement.
+ * Exported since Story 4.2: the CSV export builds its query string from THIS map (minus
+ * `page`/`pageSize` — the export carries every matching row), so the screen's list and the
+ * export cannot disagree on a wire name.
+ */
+export const FILTER_PARAM_NAMES = {
+  status: 'status',
+  leaveTypeId: 'leave_type_id',
+  dateFrom: 'date_from',
+  dateTo: 'date_to',
+  page: 'page',
+  pageSize: 'page_size',
+} as const
+
+/**
+ * The scoped leave-requests list (FR-03, FR-12). The server resolves scope from the caller's role
+ * — an Employee sees their own, a Manager their Direct Reports', an Admin all — so this one hook
+ * serves every role, and the filters compose server-side as an intersection that only ever
+ * NARROWS that scope. Every value is `encodeURIComponent`-escaped into the query string (the 2.7
+ * review's rule); the query key carries the whole `filters` object (TanStack v5 hashes keys
+ * structurally), so each combination caches distinctly while `LEAVE_REQUESTS_QUERY_KEY` prefix
+ * invalidation still reaches all of them.
+ *
+ * `options.enabled` gates the fetch (mirrors `useEmployees`): the Manager queue passes the
+ * resolved `isManager` so a non-Manager, which renders nothing, never issues the request at all.
+ */
+export function useLeaveRequests(
+  filters: LeaveRequestFilters = {},
+  options?: { enabled?: boolean },
+) {
+  const pairs = (Object.keys(FILTER_PARAM_NAMES) as (keyof LeaveRequestFilters)[])
+    .filter((key) => filters[key] !== undefined)
+    .map(
+      (key) =>
+        `${FILTER_PARAM_NAMES[key]}=${encodeURIComponent(String(filters[key]))}`,
+    )
   const path: `/${string}` =
-    status !== undefined
-      ? `/leave-requests?status=${encodeURIComponent(status)}`
-      : '/leave-requests'
+    pairs.length > 0 ? `/leave-requests?${pairs.join('&')}` : '/leave-requests'
   return useQuery({
-    queryKey: [...LEAVE_REQUESTS_QUERY_KEY, status ?? 'ALL'],
+    queryKey: [...LEAVE_REQUESTS_QUERY_KEY, filters],
     queryFn: () => apiFetch<Page<LeaveRequest>>(path),
     enabled: options?.enabled,
   })
@@ -162,10 +244,32 @@ export function useLeaveRequests(status?: string, options?: { enabled?: boolean 
  * means the row was decided or cancelled UNDER the Manager — exactly the case whose whole point is to
  * self-heal by dropping the now-stale row from the queue. Invalidating only on success would leave
  * that row visible while the inline message claims the queue refreshed (which it must actually do).
+ *
+ * The calendar joins the fan-out (Story 3.3): a decision flips a PENDING row to APPROVED/REJECTED
+ * — exactly the facts the inline decision calendar shows — so without this the Manager approves a
+ * request and the calendar under it keeps saying the leave is Pending.
+ *
+ * 🚨 `NOTIFICATIONS_QUERY_KEY` is DELIBERATELY ABSENT here, and it is not an oversight (Story 3.4).
+ * A decision notifies the APPLICANT; the actor running this handler is the MANAGER. The decider is
+ * never the recipient — a Manager cannot decide her own request, and scope `reports` excludes her
+ * own row (pinned since 2.7) — so there is nothing in THIS browser's cache to refresh. Invalidating
+ * a key no query on this client holds would be a no-op that reads as intent.
+ *
+ * Note the one case that looks like a counter-example and is not: this same handler is also
+ * `useCancelLeaveRequest`'s, where the actor IS the applicant — but a self-cancel writes ZERO
+ * notifications (AC3's implied negative; `cancel_leave_request` passes no `notify_kind`), so there
+ * is still nothing to invalidate. Cross-user freshness is `staleTime` + `refetchOnWindowFocus`, not
+ * invalidation (Open Decision #4 — the app has no polling precedent and adding one would be a new
+ * standing cost, not a bug fix).
  */
 function invalidateAfterDecision(queryClient: ReturnType<typeof useQueryClient>) {
   void queryClient.invalidateQueries({ queryKey: LEAVE_REQUESTS_QUERY_KEY })
   void queryClient.invalidateQueries({ queryKey: BALANCES_QUERY_KEY })
+  void queryClient.invalidateQueries({ queryKey: CALENDAR_QUERY_KEY })
+  // Story 3.5: a decision moves the Manager's own dashboard — the pending-decision count falls,
+  // and an approval can put a report onto the on-leave card. One prefix reaches all three roles'
+  // dashboards ("invalidating them anyway costs one refetch … correctness over a saved request").
+  void queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY })
 }
 
 /** Approve a Direct Report's Pending request (AC1). Manager-only server-side; scope `reports`. */

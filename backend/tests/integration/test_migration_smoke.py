@@ -23,8 +23,15 @@ from sqlalchemy import Connection, text
 # Story 2.11 to `0010_admin_review_flag` (the refusal register — the THIRD append-only table, again
 # with its own INSERT/SELECT grant and neither UPDATE nor DELETE, because nothing is inherited).
 # Story 2.12 to `0011_policy_change` (the policy-change log — the FOURTH, same shape, plus the one
-# CHECK AC1 makes non-negotiable: `disposition IN ('RECALCULATE','PRESERVE')`).
-HEAD_REVISION = "0011_policy_change"
+# CHECK AC1 makes non-negotiable: `disposition IN ('RECALCULATE','PRESERVE')`). Story 3.4 to
+# `0012_notification` — the FIRST non-append-only table since 0008 (`read_at` is mutable, so it
+# grants `SELECT, INSERT, UPDATE`, not `INSERT, SELECT`) and the first PARTIAL index. ⚠️ The index
+# assertions in THIS file check `indexname` only; that is NOT sufficient for a partial index (a
+# plain one would pass), so `tests/integration/test_notifications.py` pins the predicate itself
+# against `pg_indexes.indexdef`. Story 4.1 to `0013_supporting_document` — the supporting-document
+# table (UNIQUE (leave_request_id), NO size_bytes — its test pins the absence), mutable like
+# `notification` (`SELECT, INSERT, UPDATE` for the attach-or-replace path; DELETE withheld).
+HEAD_REVISION = "0013_supporting_document"
 
 
 def _public_tables(db_connection: Connection) -> set[str]:

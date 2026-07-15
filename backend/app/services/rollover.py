@@ -48,8 +48,11 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from app.domain import vocabulary
 from app.domain.carry_forward import carry_forward_days
 from app.domain.proration import prorate_entitlement
+from app.domain.recalculation import YearBalance, project_forward
+from app.repositories import admin_review_flag as admin_review_flag_repo
 from app.repositories import employee as employee_repo
 from app.repositories import leave_balance as leave_balance_repo
 from app.repositories import leave_type as leave_type_repo
@@ -70,6 +73,7 @@ class RolloverSummary:
     leave_types: int
     balances_written: int
     missing_source_rows: int
+    refused_pairs: int
 
 
 def _now() -> datetime.datetime:
@@ -105,9 +109,13 @@ def run_rollover(leave_year: int) -> RolloverSummary:
     manipulation), so it cannot police the calendar and does not try. Rolling a year that is still
     open is not refused here — but it is a mistake, because subsequent activity in that year will
     LOWER `available(Y)`, and the next run at the real boundary would then lower
-    `carried_forward(Y+1)`. `set_accrual`'s `available >= 0` gate turns the worst case (days already
-    booked in `Y + 1`) into a guarded `ValueError` rather than a raw CHECK violation, but the right
-    fix is to roll a year that is over.
+    `carried_forward(Y+1)`. A pair whose `Y + 1` year is already too spent to absorb the lowered
+    accrual is REFUSED per pair — written not at all, flagged for Admin review with
+    `CAUSE_ROLLOVER_RECALCULATION`, counted in the summary — and the batch continues (code review
+    2026-07-15). Before that guard, `set_accrual`'s `available >= 0` gate raised its guarded
+    `ValueError` here and one such pair aborted the ENTIRE org-wide transaction, which made a legal
+    AC5 re-run dangerous exactly when a prior refusal had left a stale pair behind. The right fix is
+    still to roll a year that is over.
 
     ONE transaction (AD-3), for every Employee × every Leave Type:
 
@@ -140,6 +148,10 @@ def run_rollover(leave_year: int) -> RolloverSummary:
     next_leave_year = leave_year + 1
     balances_written = 0
     missing_source_rows = 0
+    refused_pairs = 0
+    # ONE instant for the whole run: every flag this batch writes and the `rollover_run` row record
+    # the same atomic fact, so they carry the same `occurred_at` (the cancellation.py principle).
+    occurred_at = _now()
 
     with Session(get_engine(), expire_on_commit=False) as session:
         # The two unpaginated `all_` helpers Story 2.4 built for exactly this kind of write-path
@@ -182,6 +194,51 @@ def run_rollover(leave_year: int) -> RolloverSummary:
                     leave_type.annual_entitlement, employee.joining_date, next_leave_year
                 )
 
+                # THE BATCH'S FORWARD CHECK (code review 2026-07-15). On a RE-RUN the `Y + 1` row
+                # already exists and may be spent; assigning a LOWERED accrual (a prior refusal
+                # left `Y`'s figures stale, or activity in a still-open `Y` shrank `available`)
+                # would fire `set_accrual`'s `available >= 0` gate — a `ValueError` that used to
+                # abort this whole org-wide transaction on one pair. Same disposition as
+                # `recompute_carry_forward` below: write NOTHING for the pair, tell an Admin once,
+                # and keep going. Locking `Y + 1` here follows AD-3's ascending order (`Y` is
+                # already held above).
+                target = leave_balance_repo.lock_balance(
+                    session,
+                    employee_id=employee.id,
+                    leave_type_id=leave_type.id,
+                    leave_year=next_leave_year,
+                )
+                if target is not None and prorated + carried < target.consumed + target.reserved:
+                    refused_pairs += 1
+                    logger.warning(
+                        "Rollover REFUSED for (employee=%s, leave_type=%s): assigning "
+                        "accrued=%d to %d would drive available below its %d consumed + %d "
+                        "reserved. Flagging for Admin review; the pair is left untouched and "
+                        "the batch continues.",
+                        employee.id,
+                        leave_type.id,
+                        prorated + carried,
+                        next_leave_year,
+                        target.consumed,
+                        target.reserved,
+                    )
+                    if not admin_review_flag_repo.flag_exists(
+                        session,
+                        employee_id=employee.id,
+                        leave_type_id=leave_type.id,
+                        leave_year=leave_year,
+                        cause=vocabulary.CAUSE_ROLLOVER_RECALCULATION,
+                    ):
+                        admin_review_flag_repo.insert_admin_review_flag(
+                            session,
+                            employee_id=employee.id,
+                            leave_type_id=leave_type.id,
+                            leave_year=leave_year,
+                            cause=vocabulary.CAUSE_ROLLOVER_RECALCULATION,
+                            occurred_at=occurred_at,
+                        )
+                    continue
+
                 balances.set_accrual(
                     session,
                     employee_id=employee.id,
@@ -196,7 +253,7 @@ def run_rollover(leave_year: int) -> RolloverSummary:
         # The log of the EXECUTION — one row, same transaction, no `UNIQUE (leave_year)` so a legal
         # second run appends a second row rather than raising.
         rollover_run_repo.insert_rollover_run(
-            session, leave_year=leave_year, occurred_at=_now()
+            session, leave_year=leave_year, occurred_at=occurred_at
         )
 
         session.commit()
@@ -208,7 +265,64 @@ def run_rollover(leave_year: int) -> RolloverSummary:
         leave_types=len(leave_types),
         balances_written=balances_written,
         missing_source_rows=missing_source_rows,
+        refused_pairs=refused_pairs,
     )
+
+
+def materialized_years(
+    session: Session,
+    *,
+    employee_id: uuid.UUID,
+    leave_type_id: uuid.UUID,
+    from_year: int,
+) -> list[YearBalance]:
+    """Lock year `from_year` and every materialized year above it, ascending (AD-3).
+
+    Balance years are materialized CONTIGUOUSLY, so the first year with no row ends the walk — the
+    same shape `recompute_carry_forward` below relies on, which is what keeps the projection and the
+    write loop agreeing about which years exist.
+
+    🚨 THE ONE COPY. This lived as `recalculation._materialized_years` until Story 3.4's Task 11 made
+    `recompute_carry_forward` forward-checked and needed the identical walk to build its projection.
+    It moved HERE rather than being duplicated because `recalculation.py` already imports this module
+    (`services/recalculation.py:80`) and the reverse edge would be a CIRCULAR import. Two copies of a
+    walk whose agreement is load-bearing is precisely the drift AD-6 cannot survive.
+
+    `leave_balance_repo.lock_balance` is called DIRECTLY, never `balances._lock`: `_lock` raises
+    `LookupError` on a missing row, and a missing row is exactly how this walk ENDS. It takes each row
+    `FOR UPDATE`, ascending by `leave_year` — the lock order AD-3 requires.
+
+    A missing row for `from_year` ITSELF is a programming error, not a client one, and is raised
+    loudly rather than silently skipped.
+    """
+    years: list[YearBalance] = []
+    year = from_year
+    while True:
+        balance = leave_balance_repo.lock_balance(
+            session,
+            employee_id=employee_id,
+            leave_type_id=leave_type_id,
+            leave_year=year,
+        )
+        if balance is None:
+            break
+        years.append(
+            YearBalance(
+                leave_year=balance.leave_year,
+                prorated_entitlement=balance.prorated_entitlement,
+                carried_forward=balance.carried_forward,
+                reserved=balance.reserved,
+                consumed=balance.consumed,
+            )
+        )
+        year += 1
+
+    if not years:
+        raise LookupError(
+            f"no leave_balance row for (employee={employee_id}, leave_type={leave_type_id}, "
+            f"year={from_year}) — the walk cannot start"
+        )
+    return years
 
 
 def recompute_carry_forward(
@@ -217,8 +331,13 @@ def recompute_carry_forward(
     employee_id: uuid.UUID,
     leave_type_id: uuid.UUID,
     leave_year: int,
-) -> None:
+    cause: str,
+    occurred_at: datetime.datetime,
+) -> bool:
     """Re-derive carry-forward FORWARD from `leave_year`, on an OPEN session (DR-7a, AD-6, AC6).
+
+    Returns `True` when the walk was applied, `False` when it was REFUSED and flagged. **It never
+    raises on a balance it cannot reconcile, and it never refuses the caller's command.**
 
     **This is the DR-7a top-up, and it is the half of Story 2.10 that does not live in the job.**
     The rollover runs once, in January. A year-`Y` Pending request rejected in February must top up
@@ -226,16 +345,63 @@ def recompute_carry_forward(
     transactions, right after the balance mutator that raised `available(Y)` and before their
     `commit()`. The release and the top-up are ONE atomic fact.
 
-    Called from exactly three sites — the three where `available(Y)` RISES:
+    Called from FOUR sites. Three RAISE `available(Y)`, and one — added by Story 3.4's Task 11 —
+    LOWERS it:
 
       * reject a Pending request       (`leave_requests._decide` → `release_reserved`)
       * applicant cancels own Pending  (`leave_requests._decide` → `release_reserved`)
       * Admin approves a Cancellation  (`cancellation.approve_cancellation_request` →
                                         `release_consumed`)
+      * 🆕 SUBMIT a request            (`leave_requests.submit_leave_request` → `reserve` /
+                                        `consume_direct`) — the AD-6 hole, closed below.
 
     And deliberately NOT from approve (`consume_reserved` leaves `available` UNCHANGED, so
     carry-forward is already correct and is never clawed back — AC6) nor from a rejected Cancellation
     Request (the Leave Request is untouched).
+
+    ---------------------------------------------------------------------------------------------
+    🚨 THE FORWARD CHECK (Story 3.4, Task 11 — the AD-6 forcing point five stories deferred)
+    ---------------------------------------------------------------------------------------------
+    AD-6 requires `carried_forward` be re-derived on "every event that can change its inputs", and its
+    only input is `available(Y)`. Story 2.10 wired this into the three sites where `available(Y)`
+    RISES. **Submission LOWERS it and recomputed nothing** — so once the rollover had run for `Y`, a
+    later year-`Y` submission left the stored `carried_forward(Y+1)` HIGHER than `min(cap,
+    available(Y))` now is: a balance that is wrong and will be believed.
+
+    ⚠️ The one-line fix `deferred-work.md:67,75` prescribes — "just add a fourth call in submit" — is
+    UNSAFE, and adding the call without the guard below would have shipped a NEW raw 500 on the
+    application's most-trafficked write path. The three old callers only ever RAISE `carried_forward`,
+    so the walk could only ever raise `accrued`. Submit is the opposite direction: it LOWERS
+    `carried_forward(Y+1)`, hence `accrued(Y+1)`, and if `Y+1` is already substantially spent that
+    drives `accrued < consumed + reserved` → `set_accrual`'s bare `ValueError` (`balances.py:328`) →
+    and there is NO `ValueError` handler in `app/main.py` or `api/v1/errors.py` → **raw 500 on the
+    submitting Employee.**
+
+    So the walk is now PROJECTED PURELY, with `domain.recalculation.project_forward` — the same pure
+    function Story 2.11 built for exactly this — BEFORE the first write. On refusal this writes NO
+    balance row and appends ONE `admin_review_flag` carrying the caller's `cause`, and the caller's
+    command COMMITS regardless.
+
+    **Refusing the submission itself was never an option**: no error code exists for "your leave is
+    fine but a carry-forward artifact in a LATER year cannot be reconciled", and inventing one to
+    refuse an Employee's leave over it would be indefensible. The submission commits; the balance the
+    system cannot reconcile is surfaced to an Admin — which is precisely the mechanism Story 2.11
+    built `admin_review_flag` to be, and it already has a read endpoint and a frontend panel.
+
+    **This closes a SECOND live defect** (`deferred-work.md:74`, Story 2.12's shipped bug): a pair
+    the policy change refused keeps a STALE cap, and the next INNOCENT reject of an unrelated
+    request for that pair walked into the same unguarded `set_accrual` and 500'd. That bug's THIRD
+    face — the same stale pair aborting a whole `run_rollover` batch on a legal AC5 re-run — is NOT
+    closed here, because `run_rollover`'s loop writes through `set_accrual` directly and never calls
+    this function; it has its OWN per-pair forward check (code review 2026-07-15), applying the same
+    write-nothing-flag-and-continue disposition.
+    `test_a_refused_pair_still_carries_a_stale_cap_into_an_unrelated_reject` is the canary that
+    pinned the reject-path bug, and it is REPLACED (not deleted quietly) by
+    `test_a_refused_pair_with_a_stale_cap_is_flagged_not_500` — `deferred-work.md:74` said so in
+    advance: *"if that test ever fails, someone fixed the bug."*
+
+    Writing NOTHING on refusal is what makes this safe to put on the submit path: the worst case is a
+    balance that stays as it was and an Admin who is told, never an Employee who cannot submit leave.
 
     **The propagation loop.** AD-6: "Recomputation propagates forward through every materialized
     later year." Raising `carried_forward(Y+1)` raises `available(Y+1)`, which can raise
@@ -264,9 +430,67 @@ def recompute_carry_forward(
     """
     leave_type = leave_type_repo.get_leave_type(session, leave_type_id)
     if leave_type is None:
-        # Unreachable through the three call sites (the Leave Request holds a valid FK), and not a
+        # Unreachable through the four call sites (the Leave Request holds a valid FK), and not a
         # client error if it ever happened — so it is loud rather than silently a no-op.
         raise LookupError(f"no leave_type row for id={leave_type_id}")
+
+    # ---- THE FORWARD CHECK — pure, and BEFORE the first write (Story 3.4, Task 11) --------------
+    # `years[0]` is `leave_year` itself, and its `reserved`/`consumed` are read straight off the row:
+    # the mutator that just ran (`reserve`, `consume_direct`, `release_reserved`, `release_consumed`)
+    # has already flushed its change, so these ARE the new absolute totals `project_forward` wants.
+    # `new_prorated_by_year` stays `None` — this re-derives CARRY-FORWARD, never proration (that is
+    # FR-06's job and belongs to Story 2.12), so the fixed-point break stays enabled and the
+    # projection agrees with the write loop below by construction.
+    years = materialized_years(
+        session,
+        employee_id=employee_id,
+        leave_type_id=leave_type_id,
+        from_year=leave_year,
+    )
+    projection = project_forward(
+        years=years,
+        new_reserved=years[0].reserved,
+        new_consumed=years[0].consumed,
+        carries_forward=leave_type.carries_forward,
+        carry_forward_cap=leave_type.carry_forward_cap,
+    )
+
+    if projection.refused:
+        # The arithmetic cannot be made consistent. Write NO balance, tell an Admin, and let the
+        # caller's transition COMMIT. One flag per refusal, carrying the cause the CALLER named — a
+        # submission and a reject are different events and an Admin triaging the queue needs to know
+        # which one she is looking at.
+        logger.warning(
+            "Carry-forward recomputation REFUSED for (employee=%s, leave_type=%s, year=%s): "
+            "available would go negative in %s. Flagging for Admin review (cause=%s); the balance is "
+            "left untouched and the caller's transition still commits.",
+            employee_id,
+            leave_type_id,
+            leave_year,
+            projection.refused_year,
+            cause,
+        )
+        # Dedupe (code review 2026-07-15): the register has no resolved state, so every retry of
+        # the SAME refused event — an Employee re-submitting against an unreconcilable pair —
+        # would append another identical row forever. One standing flag per (pair, year, cause)
+        # says everything N copies would; a DIFFERENT cause still writes its own row, because a
+        # submission and a reject are different events.
+        if not admin_review_flag_repo.flag_exists(
+            session,
+            employee_id=employee_id,
+            leave_type_id=leave_type_id,
+            leave_year=leave_year,
+            cause=cause,
+        ):
+            admin_review_flag_repo.insert_admin_review_flag(
+                session,
+                employee_id=employee_id,
+                leave_type_id=leave_type_id,
+                leave_year=leave_year,
+                cause=cause,
+                occurred_at=occurred_at,
+            )
+        return False
 
     year = leave_year
     while True:
@@ -281,7 +505,7 @@ def recompute_carry_forward(
         if target is None:
             # No row for `target_year` — the rollover has not opened it. Nothing to top up, and
             # nothing beyond it can exist either (years are materialized in order). Done.
-            return
+            return True
 
         source = leave_balance_repo.lock_balance(
             session,
@@ -301,7 +525,7 @@ def recompute_carry_forward(
         if carried == target.carried_forward:
             # Already correct — and every later year derives from THIS one, so nothing above can
             # have moved either. Stop; the walk is not just an optimization, it is the fixed point.
-            return
+            return True
 
         # Only `carried_forward` moves. The other two accrual figures are read off the row and
         # passed straight back, because this is not a re-proration.

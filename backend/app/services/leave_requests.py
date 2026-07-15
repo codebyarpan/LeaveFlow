@@ -29,6 +29,7 @@ import datetime
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import Row
 from sqlalchemy.orm import Session
@@ -42,11 +43,14 @@ from app.repositories import audit_entry as audit_entry_repo
 from app.repositories import holiday as holiday_repo
 from app.repositories import leave_balance as leave_balance_repo
 from app.repositories import leave_request as leave_request_repo
+from app.repositories import leave_type as leave_type_repo
+from app.repositories import notification as notification_repo
 from app.repositories.engine import get_engine
 from app.repositories.models import Employee
 from app.repositories.scoping import Scope
 from app.services import authorization as authz
 from app.services import balances
+from app.services import documents as documents_service
 from app.services import rollover
 
 # The four Leave Request status values, re-exported for the `api/` status filter (Story 2.7). The
@@ -137,6 +141,9 @@ _ZERO_LEAVE_DAYS_MESSAGE = (
 _TRANSITION_NOT_ALLOWED_MESSAGE = (
     "The request is no longer in a state that allows this action."
 )
+_SUPPORTING_DOCUMENT_REQUIRED_MESSAGE = (
+    "This leave type requires a supporting document; attach one to submit."
+)
 
 
 def _invalid_date_range() -> DomainError:
@@ -175,6 +182,21 @@ def _zero_leave_days() -> DomainError:
     )
 
 
+def _supporting_document_required(leave_type_code: str) -> DomainError:
+    """Build the `400 SUPPORTING_DOCUMENT_REQUIRED` refusal, naming the Leave Type (Story 4.1, AC4).
+
+    Raised when a submission for a Leave Type whose `requires_supporting_document` is true
+    arrives with no document part — THIS service is the one place the gate lives (FR-13).
+    `details` names the code that forced it (NFR-17): the client knows WHICH type wants
+    evidence, not merely that something did.
+    """
+    return DomainError(
+        code=vocabulary.SUPPORTING_DOCUMENT_REQUIRED,
+        message=_SUPPORTING_DOCUMENT_REQUIRED_MESSAGE,
+        details={"leave_type_code": leave_type_code},
+    )
+
+
 def _transition_not_allowed() -> DomainError:
     """Build the `409 TRANSITION_NOT_ALLOWED` refusal — the guarded UPDATE matched zero rows (AC2).
 
@@ -205,13 +227,17 @@ def _scope_for_role(role: str) -> Scope:
     return Scope.SELF
 
 
-def _row_to_view(row: Row, *, status: str | None = None) -> LeaveRequestView:  # type: ignore[type-arg]
+def row_to_view(row: Row, *, status: str | None = None) -> LeaveRequestView:  # type: ignore[type-arg]
     """Map a repository `_READ_COLUMNS` row to a `LeaveRequestView`.
 
     `status` overrides the row's stored status when set — a transition returns the view with the
     NEW state (the row still holds the OLD `from` state at read time), while a read passes `status=
     None` and keeps the row's current value. `leave_days` is read straight from the stored column
     (AD-18); nothing here recomputes it.
+
+    PUBLIC (Story 3.3): `services/calendar.py` reuses this same mapper rather than copying it —
+    the AD-18 guarantee (stored `leave_days`, never recomputed) lives in this ONE mapper reading
+    `_READ_COLUMNS` verbatim, and a copy would be a second place for it to silently break.
     """
     return LeaveRequestView(
         id=row.id,
@@ -299,8 +325,18 @@ def submit_leave_request(
     leave_type_id: uuid.UUID,
     start: datetime.date,
     end: datetime.date,
+    document: documents_service.UploadDocument | None = None,
 ) -> SubmitView:
     """Submit a Leave Request atomically — the first WRITE in the lifecycle (FR-08, AC3–AC5).
+
+    `document` (Story 4.1, AC4/OD#1) is the multipart submission's rider — plain bytes +
+    metadata (`UploadDocument`), never a framework type (contract 1). THIS function is the one
+    place FR-13's gate lives: a Leave Type whose `requires_supporting_document` is true refuses
+    a documentless submission with `400 SUPPORTING_DOCUMENT_REQUIRED` — decided after the pure
+    range refusals and BEFORE any lock. A document that does ride along is validated, its row
+    inserted and its file written INSIDE this same transaction, after the request insert
+    flushes the id — one command, one commit: a refused submission (any refusal, including an
+    invalid file) leaves no `leave_request` row, no document row and no file.
 
     Scope `self`, intrinsic to the token subject: an Employee submits their OWN request. The
     whole command is ONE write transaction (AD-3), opened and committed here — a rolled-back
@@ -359,6 +395,21 @@ def submit_leave_request(
         ):
             authz.not_found()
 
+        # Step 1c — FR-13's gate, THE one place it is enforced (Story 4.1, AC4). After the pure
+        # range refusals and the balance-existence 404, BEFORE any lock: a document-requiring
+        # Leave Type refuses a documentless submission with a typed 400 naming the type's code.
+        # The row exists — step 1b's materialized balance FK-guarantees the leave type — but the
+        # `None` guard keeps this loud-safe rather than trusting the inference. An Admin who set
+        # the flag true before this story shipped created a requirement that was configurable but
+        # unenforced — "a deliberate act, not a latent gap" (PRD §7.3); it is enforced from here on.
+        leave_type = leave_type_repo.get_leave_type(session, leave_type_id)
+        if (
+            leave_type is not None
+            and leave_type.requires_supporting_document
+            and document is None
+        ):
+            raise _supporting_document_required(leave_type.code)
+
         # Step 2 — Company Holidays in range → the {date: name} map (the preview's shape).
         holidays = holiday_repo.holidays_in_range(session, start, end)
         holiday_map = {holiday.holiday_date: holiday.name for holiday in holidays}
@@ -384,6 +435,14 @@ def submit_leave_request(
             actor_type = vocabulary.ACTOR_SYSTEM
             actor_id: uuid.UUID | None = None
             reason = vocabulary.REASON_AUTO_APPROVED_NO_MANAGER
+            # Story 3.4 / AC4 — the managerless applicant is their OWN addressee, and the kind is
+            # `REQUEST_APPROVED`, because that is what actually happened to their request. There is
+            # deliberately NO `REQUEST_SUBMITTED` here: AC4 says why in as many words — "because it
+            # would have no addressee." The recipient column is NOT NULL, so the naive unconditional
+            # `REQUEST_SUBMITTED` insert with `recipient=actor.manager_id` would not merely be wrong,
+            # it would violate the FK constraint on `None` and surface as a RAW 500 on this path.
+            notify_kind = vocabulary.NOTIFICATION_REQUEST_APPROVED
+            notify_recipient = actor.id
         else:
             balances.reserve(
                 session,
@@ -396,6 +455,12 @@ def submit_leave_request(
             actor_type = vocabulary.ACTOR_EMPLOYEE
             actor_id = actor.id
             reason = vocabulary.REASON_SUBMITTED
+            # Story 3.4 / AC2 — the request is now waiting on a human, so tell that human. The
+            # recipient is the applicant's MANAGER, read straight off the authenticated actor: no
+            # lookup query is needed, and `actor.manager_id` is non-`None` in this branch by the
+            # condition above.
+            notify_kind = vocabulary.NOTIFICATION_REQUEST_SUBMITTED
+            notify_recipient = actor.manager_id
 
         request = leave_request_repo.insert_leave_request(
             session,
@@ -405,6 +470,51 @@ def submit_leave_request(
             end_date=end,
             leave_days=leave_days,
             status=status,
+        )
+
+        # ---- AD-6: THE SUBMIT-SIDE CARRY-FORWARD RECOMPUTE (Story 3.4, Task 11) -----------------
+        # AD-6 requires `carried_forward` be re-derived on "EVERY event that can change its inputs",
+        # and its only input is `available(Y)`. Story 2.10 wired the recompute into the three sites
+        # where `available(Y)` RISES (reject, self-cancel, approve-CR) and MISSED THIS ONE, the only
+        # site where it FALLS. So once the rollover had run for `Y` — which it may, `run_rollover`
+        # has no clock and merely WARNS when rolling an open year — a later year-`Y` submission left
+        # the stored `carried_forward(Y+1)` HIGHER than `min(cap, available(Y))` now is. A leave
+        # balance that is wrong and will be believed, which is PRD §1's central promise.
+        #
+        # Five stories deferred this (2.11 #8 → 2.12 #11 → 3.1 #6 → 3.2 #4 → 3.3 #7) and named 3.4 the
+        # forcing point. It is closed HERE.
+        #
+        # 🚨 The call is safe ONLY because `recompute_carry_forward` is now FORWARD-CHECKED. The
+        # one-line fix `deferred-work.md:67,75` prescribes — this call, without the guard — would have
+        # shipped a NEW raw 500 on the most-trafficked write path in the application: submit LOWERS
+        # `carried_forward(Y+1)`, hence `accrued(Y+1)`, and on a `Y+1` that is already spent that
+        # drives `accrued < consumed + reserved` → `set_accrual`'s bare `ValueError` → no handler →
+        # 500. The guard projects the walk purely first, and on refusal writes NO balance and raises
+        # an `admin_review_flag` instead. **The submission ALWAYS commits**: refusing an Employee's
+        # leave over a carry-forward artifact in a LATER year would be indefensible, and no error code
+        # exists for it. The unreconcilable balance goes to an Admin, not to the applicant.
+        #
+        # `leave_year=start.year`, NOT `_current_leave_year()` — the wrong helper is defined ~60 lines
+        # up in this module and is already in scope. A request never spans two Leave Years (DR-6), so
+        # `start.year` IS its Leave Year, and it is the same value `reserve`/`consume_direct` were
+        # given above. `_decide`'s standing warning is about exactly this trap.
+        #
+        # It runs AFTER the request insert so that a refusal flags a pair whose Reserved/Consumed
+        # already include this request, and writes NO audit row (a balance re-derivation is not a
+        # state transition — SM-4's exact count of 14 stays true).
+        #
+        # ONE instant for the whole transition (the cancellation.py principle, code review
+        # 2026-07-15): the flag a refusal may raise, the audit row and the notification below all
+        # record the same atomic fact, so they carry the same `occurred_at` — ordering artifacts by
+        # time across tables must never interleave other transactions inside one logical event.
+        occurred_at = _now()
+        rollover.recompute_carry_forward(
+            session,
+            employee_id=actor.id,
+            leave_type_id=leave_type_id,
+            leave_year=start.year,
+            cause=vocabulary.CAUSE_SUBMISSION_RECALCULATION,
+            occurred_at=occurred_at,
         )
 
         # Exactly one audit row, in THIS transaction (AD-8). `from_state=None` — a creation has no
@@ -418,8 +528,44 @@ def submit_leave_request(
             actor_type=actor_type,
             actor_id=actor_id,
             reason=reason,
-            occurred_at=_now(),
+            occurred_at=occurred_at,
         )
+
+        # Exactly ONE Notification, in THIS SAME transaction (Story 3.4, AC2/AC4; AD-16's third
+        # clause: "the service that performs a transition is the service that writes its
+        # Notification, inside that transition's transaction"). So a submission that ROLLS BACK — an
+        # `INSUFFICIENT_BALANCE` raised under the lock above, say — leaves NO notification claiming a
+        # request was filed. One exists if and only if the submission committed.
+        #
+        # WHICH notification is decided in the branch above, and the two branches differ (Landmine 1):
+        # a managed applicant notifies their MANAGER (`REQUEST_SUBMITTED`); a MANAGERLESS applicant
+        # notifies THEMSELVES (`REQUEST_APPROVED`), and no `REQUEST_SUBMITTED` is ever written. It is
+        # NOT one unconditional insert — that would violate the NOT NULL recipient FK on the
+        # managerless path and fail AC4 twice over.
+        #
+        # This writes NO audit row (there is no `SUBJECT_NOTIFICATION` and there must not be one): a
+        # Notification is a CONSEQUENCE of the transition, not a transition, so SM-4's exact count of
+        # 14 audit rows stays literally true (AD-8's "and nothing else").
+        notification_repo.insert_notification(
+            session,
+            recipient_employee_id=notify_recipient,
+            leave_request_id=request.id,
+            kind=notify_kind,
+            created_at=occurred_at,
+        )
+
+        # Story 4.1 (AC4, OD#1/OD#4) — a document riding the submission is validated (type first,
+        # then size — both refusals roll the WHOLE submission back: no request row, no document
+        # row, no file), its row inserted and its file written INSIDE this transaction, after
+        # `insert_leave_request` flushed the id it references. Placed LAST among the writes so the
+        # orphan-file window (a crash between file write and commit — OD#4's accepted, unreachable
+        # orphan) is as narrow as it can be. Writes NO audit row and NO notification of its own:
+        # the document is part of THIS submission, not a second event.
+        document_path: Path | None = None
+        if document is not None:
+            _, document_path = documents_service.store_new_document(
+                session, leave_request_id=request.id, upload=document
+            )
 
         # Snapshot the projectable fields BEFORE commit (attributes stay readable —
         # `expire_on_commit=False`), so the route projects committed values (AD-18: `leave_days`
@@ -432,7 +578,15 @@ def submit_leave_request(
             leave_days=leave_days,
             status=status,
         )
-        session.commit()
+        try:
+            session.commit()
+        except Exception:
+            # OD#4: the commit failed after the file write — the rows roll back with the
+            # transaction, so the file must not linger claiming a submission that never happened.
+            # `unlink_quietly`: a failure here must not mask the commit error (2026-07-15 review).
+            if document_path is not None:
+                documents_service.unlink_quietly(document_path)
+            raise
         return view
 
 
@@ -454,6 +608,7 @@ def _decide(
     actor_type: str,
     actor_id: uuid.UUID | None,
     recompute_carry_forward: bool = False,
+    notify_kind: str | None = None,
 ) -> LeaveRequestView:
     """The one transaction every transition (approve/reject/cancel) shares (AC1–AC3, AC7, AC8).
 
@@ -496,6 +651,34 @@ def _decide(
     guarantee an accident of the numbers rather than a decision the code states. `reject_leave_
     request` and `cancel_leave_request` pass `True`; `approve_leave_request` does not, and the
     default is `False` so a future caller must opt in deliberately.
+
+    --- Why the NOTIFICATION is conditional too, and for exactly the same reason (Story 3.4, AC3) ---
+
+    🚨 THIS FUNCTION IS SHARED BY CANCEL. Of its three callers, exactly TWO notify: approve
+    (`REQUEST_APPROVED`) and reject (`REQUEST_REJECTED`). **A self-cancellation notifies NOBODY** —
+    no AC grants it, and the `kind` CHECK does not even admit a value for it, so an unconditional
+    insert here would raise a CHECK violation as a raw 500 on the cancel path (or, worse, quietly
+    write a `REQUEST_REJECTED` the applicant never earned). The complete cardinality table is in the
+    story's Dev Notes; the short version is that a cancellation is the applicant acting on their own
+    request, and there is no one to tell.
+
+    So `notify_kind` is a keyword-only opt-in defaulting to `None`, deliberately mirroring
+    `recompute_carry_forward` above — that parameter exists for PRECISELY this shape of problem ("a
+    transition-specific side effect that must be a stated decision, not an accident of which callers
+    happen to share a function"), and this is its second instance. `approve_leave_request` passes
+    `NOTIFICATION_REQUEST_APPROVED`; `reject_leave_request` passes `NOTIFICATION_REQUEST_REJECTED`;
+    `cancel_leave_request` PASSES NOTHING, and the `None` default means no notification.
+
+    🚨 And the RECIPIENT is `row.employee_id` — the APPLICANT — never `actor.id`, who is the MANAGER
+    doing the deciding. Getting that backwards notifies the Manager about their own decision, which
+    is useless to everyone; and note that an AC5-style "I only see my own notifications" test would
+    STILL PASS with the recipient inverted, because the Manager would legitimately see the (wrong)
+    notification addressed to them. Only a test that asserts the recipient IS the applicant catches
+    it.
+
+    The notification rides THIS transaction (AD-16), so a 409'd transition — the guarded UPDATE
+    matching zero rows at step 2 — writes none: the whole transaction rolls back. One exists if and
+    only if the transition committed. It writes NO audit row (SM-4 stays at exactly 14).
     """
     with Session(get_engine(), expire_on_commit=False) as session:
         row = leave_request_repo.get_leave_request(session, actor, request_id, scope)
@@ -519,6 +702,11 @@ def _decide(
             days=row.leave_days,
         )
 
+        # ONE instant for the whole transition (the cancellation.py principle, code review
+        # 2026-07-15): the flag a refused recompute may raise, the audit row and the notification
+        # all record the same atomic fact and carry the same `occurred_at`.
+        occurred_at = _now()
+
         if recompute_carry_forward:
             # DR-7a (Story 2.10, AC6): `release_reserved` just RAISED `available(Y)`, so the derived
             # `carried_forward(Y+1)` — and every materialized year above it — must be re-derived and
@@ -530,11 +718,18 @@ def _decide(
             # year `Y+1` would recompute forward from `Y+1` and the top-up would never fire. The
             # mutator two lines above used `row.start_date.year`; this uses the same value. A request
             # never spans two Leave Years (DR-6), so `start_date.year` IS its Leave Year.
+            #
+            # `cause=CAUSE_TRANSITION_RECALCULATION` (Story 3.4, Task 11): this path RAISES
+            # `available(Y)`, so the forward check can only refuse when a PRIOR refused policy change
+            # left a stale cap on the pair. That used to be a raw 500 on an innocent third party's
+            # reject (`deferred-work.md:74`); it is now a flag, and this reject still commits.
             rollover.recompute_carry_forward(
                 session,
                 employee_id=row.employee_id,
                 leave_type_id=row.leave_type_id,
                 leave_year=row.start_date.year,
+                cause=vocabulary.CAUSE_TRANSITION_RECALCULATION,
+                occurred_at=occurred_at,
             )
 
         audit_entry_repo.insert_audit_entry(
@@ -546,10 +741,24 @@ def _decide(
             actor_type=actor_type,
             actor_id=actor_id,
             reason=reason,
-            occurred_at=_now(),
+            occurred_at=occurred_at,
         )
 
-        view = _row_to_view(row, status=to_status)
+        if notify_kind is not None:
+            # Story 3.4, AC3 — approve and reject notify the APPLICANT; cancel passes no
+            # `notify_kind` and so writes nothing (see the docstring above). Same transaction as the
+            # transition and the audit row: a 409'd decision rolls all three back together (AD-16).
+            #
+            # `row.employee_id` — the APPLICANT — and NOT `actor.id`, who is the deciding Manager.
+            notification_repo.insert_notification(
+                session,
+                recipient_employee_id=row.employee_id,
+                leave_request_id=request_id,
+                kind=notify_kind,
+                created_at=occurred_at,
+            )
+
+        view = row_to_view(row, status=to_status)
         session.commit()
         return view
 
@@ -566,6 +775,9 @@ def approve_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveReques
     `consume_reserved` leaves `available(Y)` unchanged, so carry-forward is already correct and must
     never be clawed back. Recomputing here would be a no-op by arithmetic today — and would make the
     no-clawback guarantee an accident of the numbers rather than something the code decides.
+
+    It DOES pass `notify_kind` (Story 3.4, AC3): the applicant — `row.employee_id`, not this Manager
+    — receives one `REQUEST_APPROVED` Notification, written inside this transaction.
     """
     return _decide(
         actor,
@@ -577,6 +789,7 @@ def approve_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveReques
         mutate=balances.consume_reserved,
         actor_type=vocabulary.ACTOR_EMPLOYEE,
         actor_id=actor.id,
+        notify_kind=vocabulary.NOTIFICATION_REQUEST_APPROVED,
     )
 
 
@@ -589,6 +802,9 @@ def reject_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequest
     `recompute_carry_forward=True` (Story 2.10, DR-7a): the release RAISES `available(Y)`, so if the
     Leave Year boundary has already been rolled, `carried_forward(Y+1)` tops up in this same
     transaction. A year-`Y` request rejected in February is exactly the scenario DR-7a exists for.
+
+    It also passes `notify_kind` (Story 3.4, AC3): the applicant — not this Manager — receives one
+    `REQUEST_REJECTED` Notification, written inside this transaction.
     """
     return _decide(
         actor,
@@ -601,6 +817,7 @@ def reject_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequest
         actor_type=vocabulary.ACTOR_EMPLOYEE,
         actor_id=actor.id,
         recompute_carry_forward=True,
+        notify_kind=vocabulary.NOTIFICATION_REQUEST_REJECTED,
     )
 
 
@@ -615,6 +832,12 @@ def cancel_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequest
 
     `recompute_carry_forward=True` (Story 2.10, DR-7a): like reject, the release raises
     `available(Y)`, so an already-rolled `carried_forward(Y+1)` tops up in this same transaction.
+
+    🚨 It passes NO `notify_kind`, and that omission is a DECISION, not an oversight (Story 3.4,
+    AC3). This is the applicant acting on their OWN request — there is no one to tell. FR-14's three
+    kinds are exhaustive and none of them describes a cancellation; an unconditional insert inside
+    the shared `_decide` would fire here and hit the `kind` CHECK as a raw 500. The `None` default is
+    what makes "cancel notifies nobody" true by construction rather than by remembering.
     """
     return _decide(
         actor,
@@ -644,13 +867,16 @@ def get_leave_request(actor: Employee, request_id: uuid.UUID) -> LeaveRequestVie
         row = leave_request_repo.get_leave_request(session, actor, request_id, scope)
         if row is None:
             authz.not_found()
-        return _row_to_view(row)
+        return row_to_view(row)
 
 
 def list_leave_requests(
     actor: Employee,
     *,
     status: str | None,
+    leave_type_id: uuid.UUID | None = None,
+    date_from: datetime.date | None = None,
+    date_to: datetime.date | None = None,
     limit: int,
     offset: int,
 ) -> tuple[list[LeaveRequestView], int]:
@@ -658,9 +884,12 @@ def list_leave_requests(
 
     Same three-way role→scope resolution as `get_leave_request`: an Employee receives their own, a
     Manager their Direct Reports', an Admin all — the scope a SQL predicate, never a post-filter
-    (AD-10). `status` narrows to one state when given (the single FR-03 filter here); `limit`/
-    `offset` come from the clamped `PageParams`. A READ session. Returns `(views, total)` for the
-    route to assemble the `Page` envelope.
+    (AD-10). The optional filters compose as an intersection and only ever NARROW that scope
+    (FR-12): `status` is Story 2.7's; `leave_type_id` and the overlap-semantics `date_from`/
+    `date_to` window are Story 3.1's, forwarded verbatim to the repository. An absent filter
+    applies no predicate — in particular no year default ever creeps in, so the unfiltered list is
+    cross-Leave-Year by construction (FR-20). `limit`/`offset` come from the clamped `PageParams`.
+    A READ session. Returns `(views, total)` for the route to assemble the `Page` envelope.
     """
     scope = _scope_for_role(actor.role)
     with Session(get_engine(), expire_on_commit=False) as session:
@@ -669,7 +898,10 @@ def list_leave_requests(
             actor,
             scope=scope,
             status=status,
+            leave_type_id=leave_type_id,
+            date_from=date_from,
+            date_to=date_to,
             limit=limit,
             offset=offset,
         )
-        return [_row_to_view(row) for row in rows], total
+        return [row_to_view(row) for row in rows], total

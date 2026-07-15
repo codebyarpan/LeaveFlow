@@ -125,6 +125,29 @@ _SCOPE_REGISTRY: dict[tuple[str, str], frozenset[Scope]] = {
     # matrix; and `GET /policy-changes` carries none either, so it is out BY CONSTRUCTION — see
     # `api/v1/policy_changes.py`.)
     ("PATCH", "/api/v1/leave-types/{leave_type_id}"): frozenset({Scope.ALL}),
+    # Story 3.4 — the notification mark-read, and the FIRST scope-matrix entry Epic 3 has needed
+    # (3.1, 3.2 and 3.3 each shipped none; this one is an OWNED guard-file change, not an accident).
+    # api-contracts §4.8 grants all three notification endpoints to Role `any` / Scope `self`, so
+    # this is `{Scope.SELF}` — and note the CONSEQUENCE, which inverts this app's habit: because the
+    # role gate admits EVERY authenticated caller, the scope predicate is the only thing that can
+    # refuse, so a non-addressee gets a byte-identical `404` (AD-10, G3), never a `403`. That is
+    # exactly the property SM-3 exists to enforce, on a resource that is not a Leave Request.
+    # (`GET /notifications` and `GET /notifications/unread-count` carry no path parameter → they are
+    # out of the matrix BY CONSTRUCTION, like `GET /leave-requests` and `GET /team`; registering
+    # either would trip `test_no_registered_entry_names_a_route_the_app_does_not_expose`.)
+    ("PATCH", "/api/v1/notifications/{notification_id}/read"): frozenset({Scope.SELF}),
+    # Story 4.1 — the two supporting-document endpoints (api-contracts §4.7), an OWNED guard-file
+    # change (the second story to legitimately edit this registry after 3.4). POST is role any /
+    # scope `self` — even an Admin attaches only to their OWN request, so anyone else's request id
+    # is a byte-identical 404. GET is role any with the scope resolved from the role (Employee
+    # `self`, Manager `reports`, Admin `all` — the `GET /leave-requests/{id}` shape): the document
+    # streams only to the applicant, their Manager, or an Admin, and every other caller's miss —
+    # like a documentless or nonexistent request — is the same 404 (AD-10; no static route maps to
+    # the storage volume, so these two operations are the ONLY path to the bytes — AD-15).
+    ("POST", "/api/v1/leave-requests/{request_id}/document"): frozenset({Scope.SELF}),
+    ("GET", "/api/v1/leave-requests/{request_id}/document"): frozenset(
+        {Scope.SELF, Scope.REPORTS, Scope.ALL}
+    ),
 }
 
 
