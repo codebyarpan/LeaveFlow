@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LeaveFlow — Dashboard (Linear direction)</title>
+<style>
+/* ============================================================
+   LeaveFlow redesign — KEY-SCREEN MOCK (Linear direction)
+   Dark-first, system-aware. Tokens here become DESIGN.md.
+   Not production code — a visual contract to react to.
+   ============================================================ */
+:root {
+  /* ---- Linear-flavored token set (dark default) ---- */
+  --bg:            #0b0c0e;   /* app canvas            */
+  --surface:       #141518;   /* cards / sidebar        */
+  --surface-2:     #191b1f;   /* hover / nested         */
+  --line:          #26282e;   /* hairline borders       */
+  --line-strong:   #34373f;
+  --ink:           #e9eaec;   /* primary text           */
+  --ink-muted:     #9498a3;   /* secondary text         */
+  --ink-faint:     #6b6f7a;   /* tertiary / labels      */
+  --accent:        #6e79f0;   /* indigo/violet          */
+  --accent-soft:   #6e79f01f;
+  --accent-ink:    #aeb5ff;
+  --up:            #3fb27f;   /* approved / positive    */
+  --up-soft:       #3fb27f1f;
+  --down:          #e5615a;   /* rejected / negative    */
+  --down-soft:     #e5615a1f;
+  --wait:          #d9a441;   /* pending / waiting      */
+  --wait-soft:     #d9a4411f;
+  --radius:        10px;
+  --radius-sm:     7px;
+  --shadow:        0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  --font: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+:root[data-theme="light"] {
+  --bg:            #f7f8fa;
+  --surface:       #ffffff;
+  --surface-2:     #f2f3f5;
+  --line:          #e7e9ee;
+  --line-strong:   #d6d9e0;
+  --ink:           #14161a;
+  --ink-muted:     #5c6470;
+  --ink-faint:     #878e9a;
+  --accent:        #5b63e0;
+  --accent-soft:   #5b63e014;
+  --accent-ink:    #4b52c9;
+  --up:            #0f7b4f; --up-soft:#0f7b4f14;
+  --down:          #b3261e; --down-soft:#b3261e14;
+  --wait:          #8a6400; --wait-soft:#8a640014;
+  --shadow:        0 1px 2px rgba(20,22,26,.05), 0 8px 24px -14px rgba(20,22,26,.18);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.006em;
+}
+.app { display: grid; grid-template-columns: 232px 1fr; grid-template-rows: 100vh; }
+
+/* ---------------- Sidebar ---------------- */
+.side { background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 12px 10px; gap: 4px; overflow-y: auto; }
+.brand { display: flex; align-items: center; gap: 9px; padding: 8px 8px 14px; }
+.brand .mark { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(140deg, var(--accent), #9aa2ff); display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 13px; }
+.brand .name { font-weight: 600; letter-spacing: -0.02em; font-size: 14.5px; }
+.nav-group { margin-top: 12px; }
+.nav-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); padding: 6px 8px 4px; font-weight: 600; }
+.nav-item { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: var(--radius-sm); color: var(--ink-muted); cursor: pointer; font-size: 13.5px; text-decoration: none; }
+.nav-item:hover { background: var(--surface-2); color: var(--ink); }
+.nav-item.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 500; }
+.nav-item .ico { width: 15px; opacity: .85; text-align: center; }
+.nav-item .count { margin-left: auto; font-size: 11px; background: var(--surface-2); color: var(--ink-muted); border-radius: 20px; padding: 1px 7px; }
+.nav-item.active .count { background: var(--accent); color: #fff; }
+
+/* ---------------- Main ---------------- */
+.main { display: flex; flex-direction: column; overflow: hidden; }
+.topbar { height: 52px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 14px; padding: 0 22px; background: color-mix(in srgb, var(--bg) 82%, transparent); }
+.crumb { font-weight: 600; letter-spacing: -0.01em; }
+.crumb small { color: var(--ink-faint); font-weight: 400; margin-left: 8px; }
+.top-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.iconbtn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-muted); display: grid; place-items: center; cursor: pointer; font-size: 14px; }
+.iconbtn:hover { color: var(--ink); border-color: var(--line-strong); }
+.bell { position: relative; }
+.bell .dot { position: absolute; top: 5px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--down); }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-muted); border: 1px solid var(--line); border-radius: 20px; padding: 3px 10px; }
+.pill .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--up); }
+.avatar { width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(140deg,#7d86ff,#c9a2ff); display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 600; }
+
+.canvas { padding: 24px 26px 40px; overflow-y: auto; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 20px; }
+.page-title { font-size: 21px; font-weight: 650; letter-spacing: -0.02em; margin: 0; }
+.page-sub { color: var(--ink-muted); font-size: 13px; margin: 4px 0 0; }
+.btn { font: inherit; font-size: 13px; font-weight: 550; border-radius: 8px; padding: 7px 13px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); cursor: pointer; display: inline-flex; gap: 7px; align-items: center; }
+.btn:hover { border-color: var(--ink-faint); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { filter: brightness(1.07); }
+
+/* ---- Stat cards ---- */
+.grid { display: grid; gap: 14px; }
+.stats { grid-template-columns: repeat(4, 1fr); margin-bottom: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 15px 16px; }
+.stat .k { font-size: 12px; color: var(--ink-muted); display: flex; align-items: center; gap: 7px; }
+.stat .v { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; margin-top: 8px; font-variant-numeric: tabular-nums; }
+.stat .d { font-size: 12px; margin-top: 5px; color: var(--ink-faint); }
+.trend.up { color: var(--up); } .trend.down { color: var(--down); }
+
+.cols { grid-template-columns: 1.55fr 1fr; align-items: start; }
+.card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.card-title { font-size: 13.5px; font-weight: 600; }
+.card-title + .card-sub { }
+.seg { display: flex; gap: 2px; background: var(--surface-2); border-radius: 7px; padding: 2px; }
+.seg span { font-size: 11.5px; padding: 3px 9px; border-radius: 5px; color: var(--ink-muted); cursor: pointer; }
+.seg span.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+
+/* ---- Bar chart (pure CSS, illustrative) ---- */
+.chart { height: 190px; display: flex; align-items: flex-end; gap: 12px; padding-top: 8px; }
+.bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; height: 100%; justify-content: flex-end; }
+.bar { width: 60%; border-radius: 5px 5px 2px 2px; background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 55%, transparent)); }
+.bar.muted { background: var(--surface-2); }
+.bar-x { font-size: 11px; color: var(--ink-faint); }
+
+/* ---- Balance list (right card) ---- */
+.bal { display: flex; flex-direction: column; gap: 13px; }
+.bal-row .bal-top { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
+.bal-top b { font-variant-numeric: tabular-nums; }
+.track { height: 6px; border-radius: 20px; background: var(--surface-2); overflow: hidden; }
+.track > i { display: block; height: 100%; border-radius: 20px; }
+
+/* ---- Table ---- */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); font-weight: 600; padding: 0 12px 10px; }
+tbody td { padding: 11px 12px; border-top: 1px solid var(--line); vertical-align: middle; }
+tbody tr:hover { background: var(--surface-2); }
+.who { display: flex; align-items: center; gap: 9px; }
+.who .a { width: 24px; height: 24px; border-radius: 50%; background: var(--surface-2); display: grid; place-items: center; font-size: 11px; color: var(--ink-muted); }
+.badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 550; padding: 2px 9px; border-radius: 20px; border: 1px solid transparent; }
+.badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.badge.approved { color: var(--up); background: var(--up-soft); }
+.badge.pending  { color: var(--wait); background: var(--wait-soft); }
+.badge.rejected { color: var(--down); background: var(--down-soft); }
+.rowbtns { display: flex; gap: 6px; justify-content: flex-end; }
+.mini { font-size: 12px; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--line-strong); background: transparent; color: var(--ink); cursor: pointer; }
+.mini.ok:hover { border-color: var(--up); color: var(--up); }
+.mini.no:hover { border-color: var(--down); color: var(--down); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---- Skeleton demo ---- */
+.sk { background: linear-gradient(90deg, var(--surface-2) 25%, var(--line) 37%, var(--surface-2) 63%); background-size: 400% 100%; animation: sh 1.4s ease infinite; border-radius: 6px; }
+@keyframes sh { 0%{background-position:100% 0} 100%{background-position:-100% 0} }
+
+.foot-note { color: var(--ink-faint); font-size: 11.5px; margin-top: 22px; text-align: center; }
+.legend { display:flex; gap:16px; font-size:11.5px; color:var(--ink-muted); margin-top:12px; }
+.legend i { display:inline-block; width:9px; height:9px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="side">
+    <div class="brand"><span class="mark">L</span><span class="name">LeaveFlow</span></div>
+
+    <div class="nav-group">
+      <div class="nav-label">Overview</div>
+      <a class="nav-item active"><span class="ico">◧</span> Dashboard</a>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-label">Leave</div>
+      <a class="nav-item"><span class="ico">＋</span> Request Leave</a>
+      <a class="nav-item"><span class="ico">≣</span> My Leave</a>
+      <a class="nav-item"><span class="ico">↩</span> Cancellations</a>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-label">Team</div>
+      <a class="nav-item"><span class="ico">✓</span> Approvals <span class="count">4</span></a>
+      <a class="nav-item"><span class="ico">◎</span> My Team</a>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-label">Reports</div>
+      <a class="nav-item"><span class="ico">↧</span> Leave Report</a>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-label">Administration</div>
+      <a class="nav-item"><span class="ico">↩</span> Cancellation Requests <span class="count">2</span></a>
+      <a class="nav-item"><span class="ico">◍</span> Employees</a>
+      <a class="nav-item"><span class="ico">▤</span> Departments</a>
+      <a class="nav-item"><span class="ico">☰</span> Leave Types</a>
+      <a class="nav-item"><span class="ico">◔</span> Holidays</a>
+      <a class="nav-item"><span class="ico">⟳</span> Policy Changes</a>
+      <a class="nav-item"><span class="ico">⚑</span> Review Flags</a>
+      <a class="nav-item"><span class="ico">◈</span> Audit Log</a>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-label">Account</div>
+      <a class="nav-item"><span class="ico">◔</span> Notifications <span class="count">3</span></a>
+      <a class="nav-item"><span class="ico">◐</span> Profile</a>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+    <div class="topbar">
+      <div class="crumb">Dashboard <small>Admin · Engineering</small></div>
+      <div class="top-actions">
+        <span class="pill"><span class="status-dot"></span> api ok</span>
+        <button class="iconbtn bell" title="Notifications">◔<span class="dot"></span></button>
+        <button class="iconbtn" title="Toggle theme" onclick="var r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'">☾</button>
+        <div class="avatar">AP</div>
+      </div>
+    </div>
+
+    <div class="canvas">
+      <div class="page-head">
+        <div>
+          <h1 class="page-title">Good afternoon, Arpan</h1>
+          <p class="page-sub">Organization-wide overview · leave year 2026</p>
+        </div>
+        <button class="btn primary">＋ Request Leave</button>
+      </div>
+
+      <!-- Stat cards -->
+      <div class="grid stats">
+        <div class="card stat">
+          <div class="k">◍ On approved leave today</div>
+          <div class="v num">7</div>
+          <div class="d">across 4 departments</div>
+        </div>
+        <div class="card stat">
+          <div class="k">⏳ Pending leave requests</div>
+          <div class="v num">12</div>
+          <div class="d"><span class="trend up">▲ 3</span> since yesterday</div>
+        </div>
+        <div class="card stat">
+          <div class="k">↩ Pending cancellations</div>
+          <div class="v num">2</div>
+          <div class="d">awaiting your decision</div>
+        </div>
+        <div class="card stat">
+          <div class="k">⚑ Open review flags</div>
+          <div class="v num">1</div>
+          <div class="d"><span class="trend down">needs attention</span></div>
+        </div>
+      </div>
+
+      <!-- Chart + balances -->
+      <div class="grid cols">
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">Employees on leave · next 14 days</div>
+            <div class="seg"><span>7d</span><span class="on">14d</span><span>30d</span></div>
+          </div>
+          <div class="chart">
+            <div class="bar-col"><div class="bar" style="height:30%"></div><div class="bar-x">Mon</div></div>
+            <div class="bar-col"><div class="bar" style="height:52%"></div><div class="bar-x">Tue</div></div>
+            <div class="bar-col"><div class="bar" style="height:44%"></div><div class="bar-x">Wed</div></div>
+            <div class="bar-col"><div class="bar" style="height:78%"></div><div class="bar-x">Thu</div></div>
+            <div class="bar-col"><div class="bar" style="height:66%"></div><div class="bar-x">Fri</div></div>
+            <div class="bar-col"><div class="bar muted" style="height:12%"></div><div class="bar-x">Sat</div></div>
+            <div class="bar-col"><div class="bar muted" style="height:8%"></div><div class="bar-x">Sun</div></div>
+            <div class="bar-col"><div class="bar" style="height:40%"></div><div class="bar-x">Mon</div></div>
+          </div>
+          <div class="legend"><span><i style="background:var(--accent)"></i>Approved leave</span><span><i style="background:var(--surface-2)"></i>Weekend / holiday</span></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title">My leave balances</div><a class="nav-item" style="padding:2px 6px;font-size:12px">View all →</a></div>
+          <div class="bal">
+            <div class="bal-row">
+              <div class="bal-top"><span>Annual leave</span><b class="num">14.5 / 25</b></div>
+              <div class="track"><i style="width:58%;background:var(--accent)"></i></div>
+            </div>
+            <div class="bal-row">
+              <div class="bal-top"><span>Sick leave</span><b class="num">8 / 10</b></div>
+              <div class="track"><i style="width:80%;background:var(--up)"></i></div>
+            </div>
+            <div class="bal-row">
+              <div class="bal-top"><span>Personal</span><b class="num">1 / 3</b></div>
+              <div class="track"><i style="width:33%;background:var(--wait)"></i></div>
+            </div>
+            <!-- skeleton example -->
+            <div class="bal-row">
+              <div class="bal-top"><span class="sk" style="width:90px;height:12px;display:inline-block">&nbsp;</span><span class="sk" style="width:44px;height:12px;display:inline-block">&nbsp;</span></div>
+              <div class="track"><i class="sk" style="width:100%"></i></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Approvals table -->
+      <div class="card" style="margin-top:14px">
+        <div class="card-head">
+          <div><div class="card-title">Pending approvals</div></div>
+          <button class="btn">View all 12 →</button>
+        </div>
+        <div class="table-wrap">
+        <table>
+          <thead><tr><th>Employee</th><th>Type</th><th>Dates</th><th class="num">Days</th><th>Status</th><th style="text-align:right">Action</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><div class="who"><span class="a">MC</span> Mary Chen</div></td>
+              <td>Annual leave</td><td>Aug 4 – Aug 8</td><td class="num">5</td>
+              <td><span class="badge pending">Pending</span></td>
+              <td><div class="rowbtns"><button class="mini ok">Approve</button><button class="mini no">Reject</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="who"><span class="a">JD</span> James Doyle</div></td>
+              <td>Sick leave</td><td>Jul 21 – Jul 22</td><td class="num">2</td>
+              <td><span class="badge pending">Pending</span></td>
+              <td><div class="rowbtns"><button class="mini ok">Approve</button><button class="mini no">Reject</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="who"><span class="a">SR</span> Sana Rao</div></td>
+              <td>Annual leave</td><td>Sep 1 – Sep 12</td><td class="num">8</td>
+              <td><span class="badge approved">Approved</span></td>
+              <td><div class="rowbtns"><button class="mini">View</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="who"><span class="a">TW</span> Tom Weir</div></td>
+              <td>Personal</td><td>Jul 30</td><td class="num">1</td>
+              <td><span class="badge rejected">Rejected</span></td>
+              <td><div class="rowbtns"><button class="mini">View</button></div></td>
+            </tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+
+      <p class="foot-note">One deployment, one organization · voice preserved · toggle ☾ in the top bar for light mode</p>
+    </div>
+  </div>
+</div>
+</body>
+</html>

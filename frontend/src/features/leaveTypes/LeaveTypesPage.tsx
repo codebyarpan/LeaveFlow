@@ -620,6 +620,18 @@ function EditPolicyForm({
         <button type="button" onClick={onCancel} disabled={isPending}>
           Cancel
         </button>
+        {/* Why Save is disabled — shown only when it is BLOCKING (not while a save is in flight,
+            which the "Saving…" label already explains). `blocked` and `nothingChanged` are mutually
+            exclusive: a no-op form has no changed keys, so it can never also need a disposition. This
+            is the second half of the disposition prompt above — the reason placed where the user is
+            looking when Save will not respond. It never gates the action; the server still does. */}
+        {!isPending && (blocked || nothingChanged) && (
+          <p className="muted" role="status">
+            {blocked
+              ? 'Choose Recalculate or Preserve above to save.'
+              : 'Make a change to save.'}
+          </p>
+        )}
         {error !== null && (
           <p className="emp-error" role="alert">
             {editErrorMessage(error)}

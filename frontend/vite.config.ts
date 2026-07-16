@@ -10,6 +10,7 @@
  */
 import { fileURLToPath } from 'node:url'
 
+import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { loadEnv } from 'vite'
 // `defineConfig` comes from `vitest/config`, not `vite`: it is the same helper widened
@@ -32,7 +33,7 @@ export default defineConfig(({ mode }) => {
     env.VITE_API_PROXY_TARGET ?? `https://localhost:${env.PROXY_HTTPS_PORT ?? '8443'}`
 
   return {
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
     // Vitest (spec-logout — the app's first frontend tests). `jsdom` gives components a DOM
     // to render into; `globals: true` exposes `describe`/`it`/`expect`/`vi` without imports;
     // the setup file registers jest-dom matchers and cleans up between tests.

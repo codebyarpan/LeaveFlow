@@ -99,3 +99,105 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-logout.md`
   summary: Logout in one browser tab does not sign out other open tabs of the same app.
   evidence: The token gate and the SESSION_EXPIRED path are both per-tab; nothing listens to the `storage` event, so a `localStorage` token removal in one tab leaves other tabs' in-memory `memoryToken` intact and fully signed in until the JWT's `exp` (it is non-revocable by design, NFR-02). A cross-tab `storage`-event listener that calls `signOut` would close it. Real and trivially reachable (open two tabs), but outside the frozen intent, which scopes logout to the acting session, and it is a pre-existing architectural gap the expiry path shares — a focused cross-tab-sync change, not this feature's.
+
+## Deferred from: quick-dev split of "unable to edit or delete leave types" (2026-07-16)
+
+- source_spec: none
+  summary: Add a soft-delete / archive capability for Leave Types (an Admin can retire a Leave Type so it is hidden from new leave requests while existing balances, requests, policy-change logs and history remain intact).
+  evidence: Split from the "unable to edit or delete leave types" intent (user chose Split, edit-fix first). No `DELETE`/archive path exists today — `POST` (create), `PATCH` (edit) and `GET` (list) are the only `/leave-types` endpoints, and there is no `is_active`/archived column, so a Leave Type can never be retired. This is a top-level independent shippable deliverable: it needs a DB migration for an archived/`is_active` column, a repository + service + API archive endpoint, list-filtering so retired types drop out of the request-submission pickers while staying visible to Admin, tests, and a frontend hook + Archive control. It must be a soft-delete (never a physical DELETE): Leave Types are referenced by `leave_balance`, `leave_request`, `policy_change` and `admin_review_flag`, and the codebase's AD-22 convention is "never physically delete, only deactivate" (the user confirmed soft-delete/archive is the desired semantics). Larger than the edit-save UX fix and independently reviewable, hence split rather than folded in.
+
+## Deferred from: review of spec-fix-leave-type-edit-save (2026-07-16)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-fix-leave-type-edit-save.md`
+  summary: The `App.test.tsx` "SESSION_EXPIRED path … empties the cache" test is flaky — `cachedQueryCount()` intermittently reads 1 instead of 0.
+  evidence: Pre-existing, surfaced incidentally during this fix's review (it fails ~30% of runs when `src/App.test.tsx` is run in ISOLATION, with no involvement from the edit-save change — which touches only `index.css`, `LeaveTypesPage.tsx`, and a new test file, none of which affect App's logout/session flow). Root cause is a race in the test, not the app: App's `SESSION_EXPIRED` handler calls `queryClient.clear()`, but a query already in flight when the event fires (e.g. `/me` or the notifications unread-count) resolves AFTER `clear()` and re-adds one entry to the shared `queryClient` cache, so `expect(cachedQueryCount()).toBe(0)` at `App.test.tsx:142` sees 1. Candidate fixes: await quiescence before asserting (`waitFor(() => expect(cachedQueryCount()).toBe(0))`), cancel in-flight queries in the handler, or stub the racing endpoints to resolve synchronously. Not caused by and out of scope for the edit-save fix. [frontend/src/App.test.tsx:142]
+
+## Deferred from: split of "apply the design system (DESIGN.md + EXPERIENCE.md) surface-by-surface" (2026-07-16)
+
+Split rationale: the redesign is multi-goal — one enabling foundation (Tailwind + token theme + reusable primitives + the sidebar/top-bar shell + state-based nav + theme toggle) plus ~18 independently-shippable surface restyles. This run builds ONLY the foundation + shell (spec-design-system-foundation-shell). Each surface below is a follow-up quick-dev run that restyles one existing panel onto the primitives; the panel's `useMe` self-gate and its TanStack Query hooks are preserved verbatim (EXPERIENCE.md HARD CONSTRAINT: frontend-only, no backend/API/logic change).
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle the adaptive Dashboard surface (DashboardPage + ManagerDashboardPanel + AdminDashboardPanel) onto the design system — stat cards, balance tracks, and the net-new charts (balance usage / pending counts / employees-on-leave) per the ratified key-screen mock.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation primitives (StatCard, BalanceTrack, Chart) and the app shell. Has a ratified mock (.working/key-screen-dashboard.html), so a strong candidate for the first surface run.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Request Leave (RequestPreviewPanel) onto the design system — Input/Select fields, primary submit button, preview of day count / projected balance / named excluded dates.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Input/Button primitives. Preview/submit hooks (usePreviewLeaveRequest, useSubmitLeaveRequest) preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle My Leave (MyLeaveHistoryPanel) onto the design system — Table with status badges, tabular numeric cells, and the reused Pager control.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table/Badge/Pager primitives. useLeaveRequests preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Cancellations (RequestCancellationPanel) onto the design system — approved-leave table with per-row cancellation-request action.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table/Button primitives. useLeaveRequests / useRaiseCancellationRequest preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Approvals (ManagerQueuePanel + embedded DecisionCalendar) onto the design system — pending-request table with inline Approve/Reject mini buttons and the department leave calendar surfaced at decision time.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table/Badge/Button-mini primitives. Approve/reject/calendar hooks and optimistic invalidation preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle My Team (MyTeamPanel) onto the design system — direct-reports table with department + active/deactivated state.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table/Badge/Avatar primitives. useTeam preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Reports (ReportsPanel) onto the design system — filters, a paged on-screen Table, and the CSV export (tables + CSV only, NO charts per SM-C2).
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Input/Table/Pager primitives. Report-scope hook + CSV export preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Cancellation Requests (admin CancellationRequestsPanel) onto the design system — pending cancellation table with Approve/Reject mini buttons.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table/Button-mini primitives. useCancellationRequests + approve/reject hooks preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Employees (EmployeesPage) onto the design system — employee table plus the create/edit Dialog and reporting-line selects.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table/Dialog/Input primitives. Employees CRUD hooks preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Departments (DepartmentsPage) onto the design system — department table with create/rename/delete controls.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table/Input/Button primitives. Departments CRUD hooks preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Leave Types (LeaveTypesPage) onto the design system — leave-type table plus the create/edit policy form with the disposition gate (preserving the just-shipped edit-Save usability fix).
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Input/Button/Dialog primitives. Must carry forward spec-fix-leave-type-edit-save's disabled-reason hint and gate logic. useLeaveTypes / useUpdateLeaveType preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Holidays (HolidaysPage) onto the design system — holiday table with add/delete controls.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table/Input/Button primitives. Holidays CRUD hooks preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Policy Changes (PolicyChangesPanel) onto the design system — append-only table of old/new value + disposition applied.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table primitive. usePolicyChanges preserved as-is (append-only, no amend control).
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Review Flags (ReviewFlagsPanel) onto the design system — table of refused recalculations, each naming the unchanged balance.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table/Badge primitives. useAdminReviewFlags preserved as-is (read-only, no resolve control).
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Audit Log (AuditLogPanel) onto the design system — paged audit-entry table.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Table/Pager primitives. useAuditEntries preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Notifications (NotificationsPanel) onto the design system — notification list, unread state, mark-read on open; the top-bar bell/unread count is wired by the shell but the panel body is restyled here.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation primitives. The ONE panel with no role gate (server addressee scope is the guard). Notification hooks preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle Profile (ProfilePage) onto the design system — read-only identity fields plus the editable Full Name form.
+  evidence: Split from the surface-by-surface redesign; depends on the foundation Input/Button primitives. useMe / useUpdateMe preserved as-is.
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Restyle the Login screen (LoginPage) onto the design system — the pre-shell auth surface (it renders outside AppShell), styled with the token theme and the Input/Button primitives.
+  evidence: Split from the surface-by-surface redesign; renders before the shell so it is a standalone surface. Auth flow (onAuthenticated, token storage) preserved verbatim.
+
+## Deferred from: review of spec-design-system-foundation-shell (2026-07-16)
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Full keyboard/AT accessibility pass on the narrow-viewport nav drawer — move focus into the drawer on open, trap focus while open, make the background `<main>` inert, and lock body scroll. (Esc-to-close was patched in the review; this is the remaining focus-management work.)
+  evidence: Edge Case Hunter + Blind Hunter both flagged that opening the drawer does not move/trap focus or lock scroll, so a keyboard user can Tab past the nav into the still-focusable content behind the backdrop. Low severity (WCAG is a declared project non-goal; the spine states a keyboard "floor" not AA); belongs in a dedicated a11y pass rather than the foundation run. [frontend/src/shell/AppShell.tsx]
+
+- source_spec: spec-design-system-foundation-shell
+  summary: Reset the nav drawer's open state when the viewport crosses from narrow to wide, so returning to a narrow width does not re-show the drawer already open.
+  evidence: `drawerOpen` in AppShell is never reset on a breakpoint change; at wide width `md:hidden` correctly hides the overlay, but the flag survives, so narrow→wide→narrow re-shows an already-open drawer with no user action. Cosmetic only; needs a matchMedia/resize listener. [frontend/src/shell/AppShell.tsx:35]
+
+- source_spec: spec-design-system-foundation-shell
+  summary: CONFIRM-WORTHY (intended, not a bug) — Departments / Leave Types / Holidays are nav-visible to ADMIN only, but their panels render read-only lists for every authenticated role, so non-admins lose the nav route to those reference lists (notably the holiday calendar, useful for leave planning) they could reach in the old stacked layout.
+  evidence: Both reviewers flagged it; it matches the FROZEN I/O matrix EMPLOYEE row (which enumerates only Dashboard/Request Leave/My Leave/Cancellations/Notifications/Profile) and the EXPERIENCE.md IA grouping these under Administration, so it is human-approved intent — logged here only so Arpan can flip `roles` for these three to 'all' (a one-line navConfig change) if he later decides non-admins should reach the read lists. [frontend/src/shell/navConfig.tsx]

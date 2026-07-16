@@ -5,6 +5,16 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LeaveFlow</title>
+    <script>
+      // Stamp the persisted theme choice before first paint to avoid a flash of the wrong
+      // theme on reload (design-system foundation). Mirrors shell/theme.tsx: an explicit
+      // 'light'/'dark' choice sets data-theme; absent it, the prefers-color-scheme fallback
+      // in index.css governs (dark-first).
+      try {
+        var t = localStorage.getItem('leaveflow-theme')
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t)
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -11,7 +11,64 @@ LeaveFlow is an Employee Leave Management System that enables employees to reque
 - Holiday and leave policy management
 - Audit logging
 - Dockerized development environment
-  
+
+## Screenshots
+
+A tour of the running application. The interface is a single-scroll console — a role-aware
+sidebar on the left, one surface at a time on the right — and ships with both light and dark
+themes.
+
+### Sign in
+
+Token-based authentication (JWT). The session is a Bearer token held in the browser and
+attached to every request; the server signs you out the moment it rejects one.
+
+![Sign in](docs/screenshots/login.png)
+
+### Dashboard
+
+Balances for the current leave year and requests still awaiting a decision. The view is
+scoped to your role: everyone sees their own balances, a Manager additionally sees their
+team's, and an Admin the whole organization.
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+### Request leave
+
+Employees file a request against a leave type, with balances and holidays taken into account.
+
+![Request leave](docs/screenshots/request-leave.png)
+
+### Administration
+
+Admins configure the whole organization — people, structure, and policy — as configuration
+rather than code.
+
+| Employees | Departments |
+| --- | --- |
+| [![Employees](docs/screenshots/employees.png)](docs/screenshots/employees.png) | [![Departments](docs/screenshots/departments.png)](docs/screenshots/departments.png) |
+
+| Leave types | Holidays |
+| --- | --- |
+| [![Leave types](docs/screenshots/leave-types.png)](docs/screenshots/leave-types.png) | [![Holidays](docs/screenshots/holidays.png)](docs/screenshots/holidays.png) |
+
+### Reporting & audit
+
+Organization-wide leave reporting for managers and admins, and an immutable audit log of
+every consequential action.
+
+| Leave report | Audit log |
+| --- | --- |
+| [![Leave report](docs/screenshots/leave-report.png)](docs/screenshots/leave-report.png) | [![Audit log](docs/screenshots/audit-log.png)](docs/screenshots/audit-log.png) |
+
+### Account
+
+Per-user notifications and profile.
+
+| Notifications | Profile |
+| --- | --- |
+| [![Notifications](docs/screenshots/notifications.png)](docs/screenshots/notifications.png) | [![Profile](docs/screenshots/profile.png)](docs/screenshots/profile.png) |
+
 ## Tech Stack
 
 - FastAPI

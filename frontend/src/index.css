@@ -1,30 +1,148 @@
+@import "tailwindcss";
+
 /*
  * The shell's styles.
  *
- * Implements: AC8, NFR-18 (usable at common desktop and tablet widths).
+ * Implements: AC8, NFR-18 (usable at common desktop and tablet widths), and the
+ * design-system foundation (spec-design-system-foundation-shell): Tailwind v4 with the
+ * DESIGN.md tokens wired as a runtime-switchable theme.
  *
- * Plain CSS, on purpose. The spine defers the choice of styling approach and component
- * library, and this story must not make it — a choice made here to render one shell
- * would bind 26 later stories to whatever seemed convenient on day three.
+ * The design-system layer below is ADDED above the pre-existing plain-CSS rules; those
+ * legacy rules (shell/panel/emp/dept/login/badge) are preserved verbatim. The seven legacy
+ * color vars are re-pointed at the new theme tokens so an un-migrated panel flips dark/light
+ * with the shell for free.
  *
  * WCAG conformance is a declared non-goal for this project. Legible contrast and a
  * sensible tab order are not, and cost nothing.
  */
 
+/*
+ * Token → utility mapping (Tailwind v4). `@theme inline` makes each utility resolve to the
+ * runtime CSS var it points at — `bg-surface` compiles to `var(--surface)`, not a baked
+ * value — so a single `data-theme` stamp on <html> recolours every utility. The real values
+ * live on `:root` (dark base) and are overridden for light below. Values are lifted verbatim
+ * from DESIGN.md.
+ */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-up: var(--up);
+  --color-up-soft: var(--up-soft);
+  --color-down: var(--down);
+  --color-down-soft: var(--down-soft);
+  --color-wait: var(--wait);
+  --color-wait-soft: var(--wait-soft);
+  --color-on-accent: var(--on-accent);
+
+  --radius-xs: 5px;
+  --radius-sm: 7px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
+  --spacing-gutter: 14px;
+  --spacing-canvas-x: 26px;
+  --spacing-canvas-y: 24px;
+  --spacing-sidebar: 232px;
+  --spacing-topbar: 52px;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+
+/*
+ * Dark is the base/default theme (dark-first). The seven legacy vars that share a DESIGN
+ * name (`--surface`, `--ink`, `--ink-muted`, `--line`, `--up`, `--down`) resolve to these
+ * source vars directly; `--waiting` (the one legacy name with no DESIGN twin) is aliased to
+ * `--wait`. Un-migrated panels keep their old layout but flip colour with the shell.
+ */
 :root {
+  --bg: #0b0c0e;
+  --surface: #141518;
+  --surface-2: #191b1f;
+  --line: #26282e;
+  --line-strong: #34373f;
+  --ink: #e9eaec;
+  --ink-muted: #9498a3;
+  --ink-faint: #6b6f7a;
+  --accent: #6e79f0;
+  --accent-soft: #6e79f01f;
+  --accent-ink: #aeb5ff;
+  --up: #3fb27f;
+  --up-soft: #3fb27f1f;
+  --down: #e5615a;
+  --down-soft: #e5615a1f;
+  --wait: #d9a441;
+  --wait-soft: #d9a4411f;
+  --on-accent: #ffffff;
+
+  /* Legacy alias: the one legacy var whose name has no DESIGN twin. */
+  --waiting: var(--wait);
+
+  color-scheme: dark;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  letter-spacing: -0.006em;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+/* Light overrides — applied when the user has explicitly chosen light… */
+:root[data-theme='light'] {
+  --bg: #f7f8fa;
   --surface: #ffffff;
+  --surface-2: #f2f3f5;
+  --line: #e7e9ee;
+  --line-strong: #d6d9e0;
   --ink: #14161a;
   --ink-muted: #5c6470;
-  --line: #e3e6ea;
+  --ink-faint: #878e9a;
+  --accent: #5b63e0;
+  --accent-soft: #5b63e014;
+  --accent-ink: #4b52c9;
   --up: #0f7b4f;
+  --up-soft: #0f7b4f14;
   --down: #b3261e;
-  --waiting: #7a5b00;
+  --down-soft: #b3261e14;
+  --wait: #8a6400;
+  --wait-soft: #8a640014;
+  --on-accent: #ffffff;
 
   color-scheme: light;
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  line-height: 1.5;
-  color: var(--ink);
-  background: #f6f7f9;
+}
+
+/* …or when the OS prefers light and no explicit choice has been made yet. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --surface-2: #f2f3f5;
+    --line: #e7e9ee;
+    --line-strong: #d6d9e0;
+    --ink: #14161a;
+    --ink-muted: #5c6470;
+    --ink-faint: #878e9a;
+    --accent: #5b63e0;
+    --accent-soft: #5b63e014;
+    --accent-ink: #4b52c9;
+    --up: #0f7b4f;
+    --up-soft: #0f7b4f14;
+    --down: #b3261e;
+    --down-soft: #b3261e14;
+    --wait: #8a6400;
+    --wait-soft: #8a640014;
+    --on-accent: #ffffff;
+
+    color-scheme: light;
+  }
 }
 
 * {
@@ -225,7 +343,7 @@ body {
   border: 1px solid var(--up);
   border-radius: 0.375rem;
   background: var(--up);
-  color: #ffffff;
+  color: var(--on-accent);
   cursor: pointer;
 }
 
@@ -329,7 +447,7 @@ body {
   padding: 1rem;
   border: 1px solid var(--line);
   border-radius: 0.375rem;
-  background: #fbfcfd;
+  background: var(--surface-2);
 }
 
 .emp-fields {
@@ -402,7 +520,7 @@ body {
 .emp-form-actions button:disabled,
 .emp-actions button:disabled {
   opacity: 0.6;
-  cursor: progress;
+  cursor: not-allowed;
 }
 
 .emp-list {
