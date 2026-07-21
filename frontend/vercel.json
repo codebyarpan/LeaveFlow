@@ -1,0 +1,8 @@
+{
+    "rewrites": [
+        {
+            "source": "/api/:path*",
+            "destination": "https://leaveflow-api-7myt.onrender.com/api/:path*"
+        }
+    ]
+}
